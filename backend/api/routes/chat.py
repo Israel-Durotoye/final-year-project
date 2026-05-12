@@ -245,7 +245,7 @@ async def post_chat(request: ChatRequest) -> ChatResponse:
 
     # ── Step 1: Retrieve relevant chunks ──────────────────────────────
     try:
-        chunks = engine.hybrid_search(query, top_k=request.top_k)
+        chunks = engine.hybrid_search(query, top_k = request.top_k)
     except Exception as exc:
         logger.exception("hybrid_search failed for query: '%s'", query[:60])
         raise HTTPException(
@@ -266,10 +266,10 @@ async def post_chat(request: ChatRequest) -> ChatResponse:
         logger.error("API key error in generate_rag_response: %s", exc)
         # Provide a clearer, actionable message for developers running locally.
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
-                "Server configuration error: missing or invalid Google API key. "
-                "Set the GOOGLE_API_KEY environment variable with a valid key."
+                "Server configuration error: missing or invalid Groq API key. "
+                "Set the GROQ_API_KEY environment variable with a valid key."
             ),
         ) from exc
     except RuntimeError as exc:

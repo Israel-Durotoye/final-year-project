@@ -402,14 +402,15 @@ class DocumentLoader:
                 "Create it and place your agronomic PDF files there."
             )
 
-        pdf_files = sorted(kb_dir.glob("*.pdf"))
-        if not pdf_files:
-            logger.warning("No PDF files found in %s", kb_dir)
+        # New behaviour: ingest Markdown files (.md) instead of PDFs.
+        md_files = sorted(kb_dir.glob("*.md"))
+        if not md_files:
+            logger.warning("No Markdown (.md) files found in %s", kb_dir)
             return IngestionStats()
 
         logger.info(
-            "Starting directory ingestion | Dir: %s | PDFs found: %d | Clear: %s",
-            kb_dir, len(pdf_files), clear,
+            "Starting directory ingestion | Dir: %s | Markdown files found: %d | Clear: %s",
+            kb_dir, len(md_files), clear,
         )
 
         # Initialise shared resources once for the whole batch
@@ -419,16 +420,16 @@ class DocumentLoader:
         t_start = time.perf_counter()
         total_stats = IngestionStats()
 
-        for pdf_path in pdf_files:
+        for md_path in md_files:
             logger.info("─" * 55)
-            pdf_stats = self._process_single_pdf(pdf_path)
+            md_stats = self._process_single_md(md_path)
             # Accumulate
-            total_stats.pdf_count         += pdf_stats.pdf_count
-            total_stats.page_count        += pdf_stats.page_count
-            total_stats.ocr_page_count    += pdf_stats.ocr_page_count
-            total_stats.chunk_count       += pdf_stats.chunk_count
-            total_stats.skipped_chunk_count += pdf_stats.skipped_chunk_count
-            total_stats.upserted_count    += pdf_stats.upserted_count
+            total_stats.pdf_count         += md_stats.pdf_count
+            total_stats.page_count        += md_stats.page_count
+            total_stats.ocr_page_count    += md_stats.ocr_page_count
+            total_stats.chunk_count       += md_stats.chunk_count
+            total_stats.skipped_chunk_count += md_stats.skipped_chunk_count
+            total_stats.upserted_count    += md_stats.upserted_count
 
         total_stats.elapsed_seconds = round(time.perf_counter() - t_start, 2)
 
@@ -465,15 +466,18 @@ class DocumentLoader:
         """
         pdf_path = Path(pdf_path)
         if not pdf_path.exists():
-            raise FileNotFoundError(f"PDF not found: {pdf_path}")
-        if pdf_path.suffix.lower() != ".pdf":
-            raise ValueError(f"Not a PDF file: {pdf_path}")
+            raise FileNotFoundError(f"File not found: {pdf_path}")
 
-        self._init_embedding_model()
-        self._init_chroma_collection(clear=False)
-
-        t_start = time.perf_counter()
-        stats = self._process_single_pdf(pdf_path)
+        # Accept Markdown files for single-file ingestion. PDF ingestion
+        # path has been deprecated in favour of Markdown sources.
+        suffix = pdf_path.suffix.lower()
+        if suffix == ".md":
+            self._init_embedding_model()
+            self._init_chroma_collection(clear=False)
+            t_start = time.perf_counter()
+            stats = self._process_single_md(pdf_path)
+        else:
+            raise ValueError(f"Unsupported file type for ingestion: {pdf_path}")
         stats.elapsed_seconds = round(time.perf_counter() - t_start, 2)
 
         if rag_engine is not None:
@@ -496,76 +500,17 @@ class DocumentLoader:
     # ------------------------------------------------------------------
 
     def _process_single_pdf(self, pdf_path: Path) -> IngestionStats:
-        """Extract, chunk, embed, and store one PDF. Returns per-file stats."""
-        import fitz
+        """
+        Deprecated PDF processing function.
 
-        filename = pdf_path.name
-        stats = IngestionStats(pdf_count=1)
-
-        logger.info("Processing: %s", filename)
-
-        try:
-            doc = fitz.open(str(pdf_path))
-        except Exception as exc:
-            logger.error("Failed to open %s: %s — skipping.", filename, exc)
-            return stats
-
-        all_chunks: list[ChunkRecord] = []
-
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
-
-            # ── Extract text from this page ────────────────────────────
-            extracted = self._extract_page(page, page_num, filename, doc)
-            stats.page_count += 1
-            if extracted.extraction_method in ("paddleocr", "combined"):
-                stats.ocr_page_count += 1
-
-            if not extracted.text.strip():
-                logger.debug(
-                    "  Page %d/%d: empty after extraction — skipping.",
-                    page_num + 1, len(doc),
-                )
-                continue
-
-            # ── Chunk the extracted text ───────────────────────────────
-            page_chunks = self._chunk_extracted_page(extracted)
-            stats.chunk_count += len(page_chunks)
-
-            # Filter out chunks that are too short to be meaningful
-            valid_chunks = [c for c in page_chunks if c.char_count >= MIN_CHUNK_CHARS]
-            skipped = len(page_chunks) - len(valid_chunks)
-            if skipped:
-                logger.debug(
-                    "  Page %d/%d: skipped %d chunk(s) below %d chars.",
-                    page_num + 1, len(doc), skipped, MIN_CHUNK_CHARS,
-                )
-            stats.skipped_chunk_count += skipped
-            all_chunks.extend(valid_chunks)
-
-            logger.debug(
-                "  Page %d/%d [%s]: %d chars → %d chunks.",
-                page_num + 1, len(doc),
-                extracted.extraction_method,
-                extracted.char_count,
-                len(valid_chunks),
-            )
-
-        doc.close()
-
-        if not all_chunks:
-            logger.warning("  No usable chunks from %s — no data stored.", filename)
-            return stats
-
-        # ── Embed and upsert all chunks from this PDF ──────────────────
-        upserted = self._embed_and_store(all_chunks)
-        stats.upserted_count = upserted
-
-        logger.info(
-            "  Done: %d pages | %d chunks | %d upserted to ChromaDB",
-            stats.page_count, stats.chunk_count - stats.skipped_chunk_count, upserted,
+        The project now ingests Markdown files. The legacy PDF pipeline is
+        intentionally left in the file for reference but is not used by the
+        updated ingestion paths. Calling this function will raise a
+        NotImplementedError to avoid accidental invocation.
+        """
+        raise NotImplementedError(
+            "PDF ingestion is deprecated. Use Markdown (.md) files in the knowledge base."
         )
-        return stats
 
     # ------------------------------------------------------------------
     # Private: text extraction
@@ -780,6 +725,53 @@ class DocumentLoader:
                 extraction_method=extracted.extraction_method,
             ))
         return records
+
+    def _process_single_md(self, md_path: Path) -> IngestionStats:
+        """Process a single Markdown file: read, chunk, embed, and store.
+
+        Returns per-file IngestionStats.
+        """
+        filename = md_path.name
+        stats = IngestionStats(pdf_count=1)
+
+        logger.info("Processing Markdown: %s", filename)
+
+        try:
+            text = md_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            logger.error("Failed to read %s: %s — skipping.", filename, exc)
+            return stats
+
+        cleaned = self._clean_text(text)
+        # Treat the entire markdown as a single 'page' for chunking
+        extracted = ExtractedPage(
+            filename=filename,
+            page_num=0,
+            text=cleaned,
+            char_count=len(cleaned),
+            extraction_method="markdown",
+        )
+
+        if not extracted.text.strip():
+            logger.warning("  %s contained no usable text — skipping.", filename)
+            return stats
+
+        stats.page_count = 1
+        page_chunks = self._chunk_extracted_page(extracted)
+        stats.chunk_count = len(page_chunks)
+
+        valid_chunks = [c for c in page_chunks if c.char_count >= MIN_CHUNK_CHARS]
+        skipped = len(page_chunks) - len(valid_chunks)
+        stats.skipped_chunk_count = skipped
+
+        upserted = self._embed_and_store(valid_chunks)
+        stats.upserted_count = upserted
+
+        logger.info(
+            "  Done: %d chunks | %d upserted to ChromaDB",
+            stats.chunk_count - stats.skipped_chunk_count, upserted,
+        )
+        return stats
 
     # ------------------------------------------------------------------
     # Private: embedding & storage
@@ -1059,13 +1051,13 @@ if __name__ == "__main__":
     # ── Validate args ──────────────────────────────────────────────────────
     if not args.kb_dir.exists():
         print(f"\n[ERROR] Knowledge base directory not found: {args.kb_dir}")
-        print(f"        Create it and place your PDF files there, then re-run.")
+        print(f"        Create it and place your Markdown (.md) files there, then re-run.")
         sys.exit(1)
 
-    pdf_count = len(list(args.kb_dir.glob("*.pdf")))
-    if pdf_count == 0:
-        print(f"\n[WARNING] No PDF files found in: {args.kb_dir}")
-        print(f"          Place agronomic PDF files there and re-run.")
+    md_count = len(list(args.kb_dir.glob("*.md")))
+    if md_count == 0:
+        print(f"\n[WARNING] No Markdown (.md) files found in: {args.kb_dir}")
+        print(f"          Place your golden_dataset.md (or other .md files) there and re-run.")
         sys.exit(0)
 
     # ── Print startup banner ───────────────────────────────────────────────
@@ -1073,7 +1065,7 @@ if __name__ == "__main__":
     print("  SOIL DOCTOR — KNOWLEDGE BASE INGESTION")
     print("━" * 60)
     print(f"  Knowledge base  : {args.kb_dir}")
-    print(f"  PDFs to process : {pdf_count}")
+    print(f"  Markdown files to process : {md_count}")
     print(f"  ChromaDB path   : {_CHROMA_DIR}")
     print(f"  Embedding model : {EMBED_MODEL_NAME}")
     print(f"  Chunk size      : {args.chunk_size} chars / {args.chunk_overlap} overlap")

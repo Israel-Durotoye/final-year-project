@@ -3,29 +3,12 @@ chat_llm.py — Soil Doctor RAG Pipeline: Generation Layer
 
 Responsibility:
     Accepts a user query and a list of RetrievedChunk objects from
-    rag_engine.py, constructs a grounded prompt, and calls Gemini to
-    generate a contextual answer strictly anchored to the retrieved text.
+    rag_engine.py, constructs a grounded prompt, and calls the Groq API
+    to generate a contextual answer strictly anchored to the retrieved text.
 
     This module deliberately contains NO retrieval logic. It receives
     pre-retrieved, pre-reranked chunks from rag_engine.py and converts
     them into a natural-language answer.
-
-Anti-Hallucination Contract (enforced in the system instruction):
-    The model is explicitly told to:
-      ① Answer ONLY from the provided context chunks — never from prior knowledge.
-      ② Cite which source document each claim comes from.
-      ③ If the context does not contain the answer, say so directly
-         rather than interpolating from general agriculture knowledge.
-      ④ Never recommend specific product brands not mentioned in the context.
-
-SDK Note:
-    Uses `google-genai` (the current Google SDK, v1.x) for consistency with
-    prescriptive_llm.py. The older `google-generativeai` package reached
-    end-of-life and should not be introduced alongside the current SDK
-    in the same codebase.
-
-Dependencies:
-    pip install google-genai
 """
 
 from __future__ import annotations
@@ -33,39 +16,26 @@ from __future__ import annotations
 import logging
 import os
 import time
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from google import genai
-from google.genai import types as genai_types
-import json
+from openai import OpenAI
 
 if TYPE_CHECKING:
-    # Avoids a circular import in type hints — rag_engine is in the same package
     from backend.rag.rag_engine import RetrievedChunk
 
 # ---------------------------------------------------------------------------
-# Logging
+# Logging & Constants
 # ---------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-DEFAULT_MODEL = "gemini-2.5-flash"
-DEFAULT_TEMPERATURE = 0.3     # Slightly higher than prescriptive engine —
-                               # conversational fluency matters more here,
-                               # but still low enough to suppress fabrication.
+DEFAULT_MODEL = "llama-3.1-8b-instant"
+DEFAULT_TEMPERATURE = 0.3     
 DEFAULT_MAX_TOKENS  = 1024
 DEFAULT_TOP_P       = 0.90
-
-# Relevance gate: chunks with a rerank_score below this threshold are
-# considered noise and excluded from the context window.
-# bge-reranker-large produces raw logit scores; values below ~-3.0 are
-# typically irrelevant to the query.
 RERANK_SCORE_THRESHOLD = -3.0
-
 
 # ---------------------------------------------------------------------------
 # Output contract
@@ -73,19 +43,6 @@ RERANK_SCORE_THRESHOLD = -3.0
 
 @dataclass
 class RAGResponse:
-    """
-    Structured result of a generate_rag_response() call.
-
-    Attributes:
-        answer                  : Model-generated answer string (markdown).
-        sources                 : Deduplicated list of source filenames cited.
-        chunks_used             : Number of retrieved chunks included in context.
-        chunks_above_threshold  : Number of chunks that cleared the relevance gate.
-        generation_time_seconds : Wall-clock time of the Gemini API call.
-        model_name              : Model identifier used for generation.
-        grounded                : True if at least one context chunk was provided.
-        timestamp_utc           : ISO 8601 timestamp of generation.
-    """
     answer: str
     sources: list[str]
     chunks_used: int
@@ -95,9 +52,8 @@ class RAGResponse:
     grounded: bool
     timestamp_utc: str
 
-
 # ---------------------------------------------------------------------------
-# Core function: generate_rag_response
+# Core function
 # ---------------------------------------------------------------------------
 
 def generate_rag_response(
@@ -110,121 +66,29 @@ def generate_rag_response(
     max_output_tokens: int = DEFAULT_MAX_TOKENS,
     rerank_threshold: float = RERANK_SCORE_THRESHOLD,
 ) -> RAGResponse:
-    """
-    Generate a RAG-grounded answer for a user query using retrieved context.
-
-    Args:
-        user_query          : The farmer or agronomist's natural-language question.
-        retrieved_chunks    : Ordered list of RetrievedChunk objects from
-                              rag_engine.hybrid_search(). Must be sorted by
-                              rerank_score descending (guaranteed by rag_engine).
-        model_name          : Gemini model to use. Default: 'gemini-1.5-flash'.
-        api_key             : Google API key. Falls back to GOOGLE_API_KEY env var.
-        temperature         : Sampling temperature. Default: 0.3.
-        max_output_tokens   : Hard cap on response length. Default: 1024.
-        rerank_threshold    : Cross-encoder score below which chunks are excluded.
-                              Set to -float('inf') to include all chunks regardless
-                              of score (not recommended for production).
-
-    Returns:
-        RAGResponse — structured result with the answer and generation metadata.
-
-    Raises:
-        EnvironmentError : If no API key is available.
-        RuntimeError     : If the Gemini API call fails or returns a blocked response.
-    """
-
-    # ------------------------------------------------------------------ #
-    # 1.  Filter chunks by relevance threshold                            #
-    # ------------------------------------------------------------------ #
-    # Exclude chunks where the cross-encoder judged the document as
-    # irrelevant to the query. This prevents the LLM from picking up
-    # noise that somehow appeared in the candidate pool.
-    qualifying_chunks = [
-        c for c in retrieved_chunks
-        if c.rerank_score >= rerank_threshold
-    ]
+    
+    qualifying_chunks = [c for c in retrieved_chunks if c.rerank_score >= rerank_threshold]
 
     logger.info(
-        "RAG generation | Query: '%s...' | Total chunks: %d | "
-        "Above threshold (%.1f): %d",
-        user_query[:60],
-        len(retrieved_chunks),
-        rerank_threshold,
-        len(qualifying_chunks),
+        "RAG generation | Query: '%s...' | Total chunks: %d | Above threshold: %d",
+        user_query[:60], len(retrieved_chunks), len(qualifying_chunks)
     )
 
-    # ------------------------------------------------------------------ #
-    # 2.  Build the context block and collect source citations            #
-    # ------------------------------------------------------------------ #
     context_block, sources = _build_context_block(qualifying_chunks)
-
-    # ------------------------------------------------------------------ #
-    # 3.  Construct the system instruction and user content               #
-    # ------------------------------------------------------------------ #
     system_instruction = _build_system_instruction()
-    user_content = _build_user_content(
-        query=user_query,
-        context_block=context_block,
-        has_context=bool(qualifying_chunks),
-    )
+    user_content = _build_user_content(user_query, context_block, bool(qualifying_chunks))
 
-    # ------------------------------------------------------------------ #
-    # 4.  Initialise the Gemini client                                    #
-    # ------------------------------------------------------------------ #
-    resolved_key = api_key or os.environ.get("GEMINI_API_KEY")
+    resolved_key = api_key or os.environ.get("GROQ_API_KEY")
     if not resolved_key:
-        raise EnvironmentError(
-            "No Google API key found. Provide it via the `api_key` argument "
-            "or set the GOOGLE_API_KEY environment variable."
-        )
-    client = genai.Client(api_key = resolved_key)
+        raise EnvironmentError("No Groq API key found. Set the GROQ_API_KEY environment variable.")
+
+    # Initialise standard OpenAI client pointing to Groq's blazing fast LPUs
+    client = OpenAI(api_key=resolved_key, base_url="https://api.groq.com/openai/v1")
 
     # ------------------------------------------------------------------ #
-    # Tool registration: include live sensor tool so Gemini can request it
+    # Tool Registration
     # ------------------------------------------------------------------ #
     def get_live_sensor_data(node_id: str) -> dict:
-        """
-        Return live telemetry for a hardware node.
-
-        Purpose and triggering guidance for the model:
-        - This function returns real-time (mocked) sensor telemetry for a
-          single hardware node identified by `node_id` (for example
-          'NODE_01' or 'NODE_A2').
-        - The model SHOULD call this function when the user explicitly asks
-          about the current state or recent readings of a specific node,
-          e.g. "What is the current soil moisture at NODE_01?",
-          "Give me the latest telemetry for node NODE_A2", or
-          "Show live sensor data for the northeast plot's node."
-        - The model MUST NOT call this function for general textbook or
-          literature questions that can be answered from the knowledge base
-          context; those should be answered using retrieved documents only.
-
-        Args:
-            node_id: The node identifier string the user referenced.
-
-        Returns:
-            A dict with the following example keys (mock telemetry):
-            {
-                "node_id": "NODE_01",
-                "timestamp_utc": "2026-05-12T12:34:56Z",
-                "soil_moisture": 23.4,         # percent
-                "soil_temperature_c": 27.1,   # Celsius
-                "ph": 5.8,
-                "nitrogen_ppm": 12.3,
-                "phosphorus_ppm": 8.1,
-                "potassium_ppm": 45.0,
-                "battery_voltage": 3.71,
-                "communication_ok": true
-            }
-
-        Note for model authors / evaluators: treat this function as an
-        authoritative source for "live" measurements — when the model
-        decides to call it, it should incorporate and cite these readings in
-        the final answer, and attribute them as live telemetry (not the
-        static knowledge base).
-        """
-        # Simple deterministic mock data — replace with real fetch in prod.
         ts = datetime.now(timezone.utc).isoformat()
         node = (node_id or "UNKNOWN").upper()
         return {
@@ -240,155 +104,91 @@ def generate_rag_response(
             "communication_ok": True,
         }
 
-    config = genai_types.GenerateContentConfig(
-        temperature=temperature,
-        max_output_tokens=max_output_tokens,
-        top_p=DEFAULT_TOP_P,
-        candidate_count=1,
-        system_instruction=system_instruction,
-        # Register the callable tool so the model can request live telemetry
-        # via a `function_call`. The SDK accepts callables directly here.
-        tools=[get_live_sensor_data],
-        safety_settings=[
-            genai_types.SafetySetting(
-                category="HARM_CATEGORY_DANGEROUS_CONTENT",
-                threshold="BLOCK_ONLY_HIGH",
-            ),
-            genai_types.SafetySetting(
-                category="HARM_CATEGORY_HARASSMENT",
-                threshold="BLOCK_MEDIUM_AND_ABOVE",
-            ),
-        ],
-    )
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "get_live_sensor_data",
+            "description": "Return real-time sensor telemetry for a single hardware node.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {"type": "string", "description": "Node identifier, e.g. NODE_01"},
+                },
+                "required": ["node_id"],
+            },
+        }
+    }]
+
+    messages = [
+        {"role": "system", "content": system_instruction},
+        {"role": "user", "content": user_content}
+    ]
 
     # ------------------------------------------------------------------ #
-    # 5.  Execute the API call                                            #
+    # Execution & Tool Loop
     # ------------------------------------------------------------------ #
     t_start = time.perf_counter()
+    
     try:
-        response = client.models.generate_content(
+        response = client.chat.completions.create(
             model=model_name,
-            contents=user_content,
-            config=config,
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_output_tokens,
+            top_p=DEFAULT_TOP_P,
         )
     except Exception as exc:
-        # Detect common API-key / argument errors and surface a clearer
-        # environment-style error so FastAPI can map it to a helpful message.
-        logger.error("Gemini API call failed in chat_llm: %s", exc)
-        msg = str(exc)
-        if (
-            "API key not valid" in msg
-            or "API_KEY_INVALID" in msg
-            or "INVALID_ARGUMENT" in msg
-            or "No Google API key" in msg
-        ):
-            raise EnvironmentError(
-                "Invalid or missing Google API key. "
-                "Set the GOOGLE_API_KEY environment variable to a valid key."
-            ) from exc
-        raise RuntimeError(
-            f"Gemini API call failed for model '{model_name}'. "
-            f"Original error: {exc}"
-        ) from exc
+        raise RuntimeError(f"Groq API call failed: {exc}") from exc
+
     elapsed = time.perf_counter() - t_start
+    message = response.choices[0].message
 
-    # ------------------------------------------------------------------ #
-    # 6b.  Handle potential function_call responses                      #
-    # If the model returned a function call request, execute the tool,
-    # provide its result back to the model, and re-run generation so the
-    # final answer can incorporate the live data.
-    # ------------------------------------------------------------------ #
-    def _extract_function_call(resp):
-        # Common attribute used by the SDK
-        if getattr(resp, "function_calls", None):
-            return resp.function_calls[0]
-        # Candidate-level shims used by some SDK versions
-        candidates = getattr(resp, "candidates", None) or getattr(resp, "outputs", None) or getattr(resp, "generations", None)
-        if candidates:
-            try:
-                for c in candidates:
-                    fc = getattr(c, "function_call", None) or getattr(c, "function_calls", None)
-                    if fc:
-                        return fc[0] if isinstance(fc, list) else fc
-            except Exception:
-                pass
-        return None
+    # Check if Llama 3 requested to use the sensor tool
+    if message.tool_calls:
+        tool_call = message.tool_calls[0]
+        logger.info("Model requested function call: %s", tool_call.function.name)
 
-    func_call = _extract_function_call(response)
-    if func_call is not None:
-        # The model asked to call a function/tool.
-        logger.info("Model requested function call: %s", getattr(func_call, "name", str(func_call)))
-        # Extract arguments (some SDKs provide args as JSON string)
-        args = getattr(func_call, "arguments", {}) or {}
-        if isinstance(args, str):
-            try:
-                args = json.loads(args)
-            except Exception:
-                args = {}
+        try:
+            args = json.loads(tool_call.function.arguments)
+        except json.JSONDecodeError:
+            args = {}
+            
+        node_id = args.get("node_id", "")
 
-        node_id = args.get("node_id") or args.get("nodeId") or args.get("node") or ""
-
-        # Execute the tool locally
         try:
             tool_result = get_live_sensor_data(node_id)
         except Exception as exc:
-            logger.exception("Tool execution failed: %s", exc)
             raise RuntimeError(f"Tool execution failed: {exc}") from exc
 
-        # Attempt to package the function response as a Part for the SDK.
-        # If the SDK doesn't support Part.from_function_response, fall back
-        # to appending the function output to the contents and regenerating.
-        # Package the history properly for the return trip
-        model_turn = response.candidates[0].content
-        
-        tool_part = genai_types.Part.from_function_response(
-            name=getattr(func_call, "name", "get_live_sensor_data"),
-            response=tool_result,  # The SDK requires a pure Python dict here, NOT a JSON string
-        )
-        tool_turn = genai_types.Content(role="user", parts=[tool_part])
-        
-        # Send the exact sequence: User asks -> Model calls tool -> User gives data
-        conversation_history = [user_content, model_turn, tool_turn]
-        
+        # Append exact conversation history for OpenAI tool strictness
+        messages.append(message)
+        messages.append({
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "name": tool_call.function.name,
+            "content": json.dumps(tool_result),
+        })
+
+        # Second trip to get the final answer with telemetry included
         t_start2 = time.perf_counter()
-        
-        # The second API call with the full context!
-        response2 = client.models.generate_content(
+        response2 = client.chat.completions.create(
             model=model_name,
-            contents=conversation_history,
-            config=config,
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
+            max_tokens=max_output_tokens,
+            top_p=DEFAULT_TOP_P,
         )
-        
         elapsed += time.perf_counter() - t_start2
-        answer_text = response2.text
+        answer_text = response2.choices[0].message.content
+    else:
+        answer_text = message.content
 
-    # ------------------------------------------------------------------ #
-    # If no function call branch executed, answer_text already set above.
-    # ------------------------------------------------------------------ #
-    # ------------------------------------------------------------------ #
-    # 6.  Extract the response text                                       #
-    # ------------------------------------------------------------------ #
-    if func_call is None:
-        try:
-            answer_text = response.text
-        except (ValueError, AttributeError) as exc:
-            block_reason = "UNKNOWN"
-            try:
-                block_reason = response.prompt_feedback.block_reason.name
-            except AttributeError:
-                pass
-            raise RuntimeError(
-                f"Gemini returned no usable text. Block reason: {block_reason}."
-            ) from exc
+    if not answer_text:
+        raise RuntimeError("Groq returned no usable text.")
 
-    logger.info(
-        "RAG response generated in %.3fs | Model: %s | "
-        "Chunks used: %d | Sources: %s",
-        elapsed,
-        model_name,
-        len(qualifying_chunks),
-        sources,
-    )
+    logger.info("RAG response generated in %.3fs | Model: %s", elapsed, model_name)
 
     return RAGResponse(
         answer=answer_text,
@@ -401,107 +201,54 @@ def generate_rag_response(
         timestamp_utc=datetime.now(timezone.utc).isoformat(),
     )
 
-
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
 
 def _build_context_block(chunks: list["RetrievedChunk"]) -> tuple[str, list[str]]:
-    """
-    Format the retrieved chunks into a numbered context block for injection
-    into the prompt, and collect deduplicated source citations.
-
-    Returns:
-        (context_block_string, sorted_unique_source_list)
-    """
     if not chunks:
         return "(No relevant context was found in the knowledge base.)", []
 
-    lines: list[str] = []
-    seen_sources: list[str] = []
-
+    lines, seen_sources = [], []
     for i, chunk in enumerate(chunks, start=1):
-        source_label = f"{chunk.source}, p.{chunk.page}" if chunk.page else chunk.source
+        source_label = f"{chunk.source}, p.{chunk.page}" if hasattr(chunk, 'page') and chunk.page else chunk.source
         lines.append(f"[CHUNK {i}] Source: {source_label}")
         lines.append(f"Relevance score: {chunk.rerank_score:.3f}")
         lines.append(chunk.text.strip())
-        lines.append("")   # blank line separator between chunks
+        lines.append("") 
 
         if chunk.source not in seen_sources:
             seen_sources.append(chunk.source)
 
     return "\n".join(lines).strip(), sorted(seen_sources)
 
-
 def _build_system_instruction() -> str:
-    """
-    Build the privileged system instruction that establishes the Soil Doctor
-    RAG persona and enforces the grounding constraint.
-
-    Kept in a dedicated function so it can be unit-tested independently
-    and easily updated without touching generate_rag_response().
-    """
-    return """You are the Soil Doctor — an expert agronomist and soil scientist \
-with deep knowledge of tropical and sub-Saharan African cereal crop production, \
-soil chemistry, and precision fertilisation. You are embedded in a digital \
-Decision Support System used by farmers and agricultural extension officers.
+    return """You are the Soil Doctor — an expert agronomist and soil scientist with deep knowledge of tropical and sub-Saharan African cereal crop production, soil chemistry, and precision fertilisation. You are embedded in a digital Decision Support System used by farmers and agricultural extension officers.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 GROUNDING RULES — NON-NEGOTIABLE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 RULE 1 — CONTEXT FIDELITY:
-You MUST base your answer EXCLUSIVELY on the KNOWLEDGE BASE CONTEXT provided \
-in the user message. Do not use any information from your pre-training that \
-is not present in or directly implied by the provided context chunks.
+You MUST base your answer EXCLUSIVELY on the KNOWLEDGE BASE CONTEXT provided in the user message. Do not use any information from your pre-training that is not present in or directly implied by the provided context chunks.
 
 RULE 2 — HONEST GAPS:
-If the provided context does not contain enough information to answer the \
-question accurately, you MUST respond with a clear statement such as: \
-"The documents in my current knowledge base do not contain specific information \
-about [topic]. I recommend consulting [relevant resource type]." \
-NEVER fabricate facts, invent statistics, or speculate beyond what the \
-context supports.
+If the provided context does not contain enough information to answer the question accurately, you MUST respond with a clear statement such as: "The documents in my current knowledge base do not contain specific information about [topic]." NEVER fabricate facts or speculate.
 
-RULE 3 — CITATION:
-For every factual claim, cite the source chunk it came from using the format \
-(Source: [filename], p.[page]). If a claim is supported by multiple chunks, \
-cite all of them.
+RULE 3 — NO CITATIONS:
+Do NOT include source names, filenames, or citations anywhere in your response.
 
 RULE 4 — PRODUCT DISCIPLINE:
-Only mention specific fertiliser products, chemical compounds, or brand names \
-that appear explicitly in the context chunks. Never suggest products from \
-general agricultural knowledge.
+Only mention specific fertiliser products, chemical compounds, or brand names that appear explicitly in the context chunks.
 
 RULE 5 — TONE:
-Write for a technically literate but non-academic audience. Use plain language \
-where possible, define agronomic jargon on first use, and structure longer \
-answers with clear headings where helpful."""
+Provide only direct, concise answers. Do not include lengthy explanations, filler words, or unnecessary background information. Get straight to the point."""
 
-
-def _build_user_content(
-    query: str,
-    context_block: str,
-    has_context: bool,
-) -> str:
-    """
-    Assemble the user-turn content block that delivers the context chunks
-    and the user's question to the model.
-    """
+def _build_user_content(query: str, context_block: str, has_context: bool) -> str:
     if not has_context:
-        # Explicit signal to the model that no context was retrieved —
-        # this triggers RULE 2 (honest gaps) in the system instruction.
-        context_note = (
-            "⚠️  NOTE: The retrieval system returned no context chunks that "
-            "meet the relevance threshold for this query. You must apply "
-            "RULE 2 and acknowledge the knowledge gap."
-        )
+        context_note = "⚠️ NOTE: The retrieval system returned no context chunks. Apply RULE 2 and acknowledge the knowledge gap."
     else:
-        context_note = (
-            "The following context chunks have been retrieved from the agronomic "
-            "knowledge base and reranked by a cross-encoder for relevance. "
-            "Use ONLY this information to answer the question below."
-        )
+        context_note = "The following context chunks have been retrieved from the agronomic knowledge base. Use ONLY this information to answer the question."
 
     return f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 KNOWLEDGE BASE CONTEXT
@@ -515,4 +262,5 @@ USER QUESTION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {query.strip()}
 
-Answer below, following all rules in your operating charter:"""
+Answer below, following all rules in your operating charter:
+"""

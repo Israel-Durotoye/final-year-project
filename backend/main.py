@@ -78,11 +78,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# ── CORS — allow the React frontend ──────────────────
+# ── CORS — allow the React frontend (localhost:8080) ──────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=False, 
+    allow_origins=["http://localhost:8080"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )

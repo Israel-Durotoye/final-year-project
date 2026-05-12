@@ -5,7 +5,7 @@ import { Send, Bot, Sparkles, Leaf, Droplets, AlertTriangle } from "lucide-react
 import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 
-interface Msg { role: "user" | "ai"; content: string; }
+interface Msg { role: "user" | "assistant"; content: string; }
 
 const suggestions = [
   { icon: Leaf, text: "Which crops suit my current N-P-K levels?" },
@@ -29,24 +29,71 @@ const sampleResponse = `Based on telemetry across your **6 nodes**, here's my as
 
 const AiDoctor = () => {
   const [messages, setMessages] = useState<Msg[]>([
-    { role: "ai", content: "👋 Hello! I'm your **AI Soil Doctor**. Ask me anything about your fields, soil chemistry, or crop health." },
+    { role: 'assistant', content: "👋 Hello! I'm your AI Soil Doctor. Ask me anything about your fields, soil chemistry, or crop health." },
   ]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [inputValue, setInputValue] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, loading]);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, isLoading]);
 
-  const send = (text?: string) => {
-    const q = (text ?? input).trim();
-    if (!q) return;
-    setMessages((m) => [...m, { role: "user", content: q }]);
-    setInput("");
-    setLoading(true);
-    setTimeout(() => {
-      setMessages((m) => [...m, { role: "ai", content: sampleResponse }]);
-      setLoading(false);
-    }, 900);
+  const handleSendMessage = async (e?: any) => {
+    if (e) e.preventDefault();
+    const user_query = inputValue.trim();
+    if (!user_query) return;
+
+    // append user message immediately
+    setMessages((m) => [...m, { role: 'user', content: user_query }]);
+    setInputValue("");
+    setIsLoading(true);
+
+    try {
+      const res = await fetch("http://localhost:8000/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: user_query }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Server responded ${res.status}`);
+      }
+
+      const data = await res.json();
+      const answer = data?.answer ?? "";
+      setMessages((m) => [...m, { role: 'assistant', content: answer }]);
+    } catch (err) {
+      setMessages((m) => [...m, { role: 'assistant', content: "Sorry — the server is unreachable. Please try again later." }]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const sendText = async (text: string) => {
+    const user_query = text.trim();
+    if (!user_query) return;
+
+    setMessages((m) => [...m, { role: 'user', content: user_query }]);
+    setIsLoading(true);
+
+    try {
+      const res = await fetch("http://localhost:8000/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: user_query }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Server responded ${res.status}`);
+      }
+
+      const data = await res.json();
+      const answer = data?.answer ?? "";
+      setMessages((m) => [...m, { role: 'assistant', content: answer }]);
+    } catch (err) {
+      setMessages((m) => [...m, { role: 'assistant', content: "Sorry — the server is unreachable. Please try again later." }]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -56,7 +103,7 @@ const AiDoctor = () => {
         <div className="flex-1 overflow-y-auto space-y-5 py-4">
           {messages.map((m, i) => (
             <div key={i} className={cn("flex gap-3 animate-float-in", m.role === "user" ? "justify-end" : "justify-start")}>
-              {m.role === "ai" && (
+              {m.role === "assistant" && (
                 <div className="h-9 w-9 rounded-full gradient-primary flex items-center justify-center shrink-0 shadow-glow">
                   <Bot className="h-4 w-4 text-primary-foreground" />
                 </div>
@@ -73,7 +120,11 @@ const AiDoctor = () => {
                     ? "prose-invert prose-p:text-primary-foreground"
                     : "prose-headings:text-foreground prose-p:text-foreground/90 prose-strong:text-foreground prose-li:text-foreground/90 prose-blockquote:text-muted-foreground prose-blockquote:border-l-primary"
                 )}>
-                  <ReactMarkdown>{m.content}</ReactMarkdown>
+                  {m.role === 'assistant' ? (
+                    <ReactMarkdown>{m.content}</ReactMarkdown>
+                  ) : (
+                    <div>{m.content}</div>
+                  )}
                 </div>
               </div>
               {m.role === "user" && (
@@ -83,7 +134,7 @@ const AiDoctor = () => {
               )}
             </div>
           ))}
-          {loading && (
+          {isLoading && (
             <div className="flex gap-3 animate-float-in">
               <div className="h-9 w-9 rounded-full gradient-primary flex items-center justify-center shrink-0 shadow-glow">
                 <Bot className="h-4 w-4 text-primary-foreground" />
@@ -95,14 +146,17 @@ const AiDoctor = () => {
               </div>
             </div>
           )}
+          {isLoading && (
+            <div className="text-sm text-muted-foreground text-center mt-2">The Soil Doctor is thinking...</div>
+          )}
           <div ref={endRef} />
         </div>
 
         {messages.length <= 1 && (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
             {suggestions.map((s, i) => (
-              <button key={i} onClick={() => send(s.text)}
-                className="text-left p-3 bg-card border border-border rounded-xl hover:border-primary/40 hover:shadow-md transition-all flex items-start gap-2.5">
+                <button key={i} onClick={() => sendText(s.text)}
+                  className="text-left p-3 bg-card border border-border rounded-xl hover:border-primary/40 hover:shadow-md transition-all flex items-start gap-2.5">
                 <s.icon className="h-4 w-4 text-primary mt-0.5 shrink-0" />
                 <span className="text-sm">{s.text}</span>
               </button>
@@ -110,20 +164,21 @@ const AiDoctor = () => {
           </div>
         )}
 
-        <div className="bg-card border border-border rounded-2xl shadow-card p-2 flex items-end gap-2">
+        <form onSubmit={handleSendMessage} className="bg-card border border-border rounded-2xl shadow-card p-2 flex items-end gap-2">
           <Sparkles className="h-5 w-5 text-primary ml-2 mb-2.5" />
           <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
             placeholder="Ask the Soil Doctor anything..."
             rows={1}
+            disabled={isLoading}
             className="flex-1 resize-none bg-transparent px-2 py-2.5 text-sm focus:outline-none max-h-32"
           />
-          <Button size="icon" onClick={() => send()} disabled={!input.trim() || loading} className="shrink-0">
+          <Button type="submit" size="icon" disabled={!inputValue.trim() || isLoading} className="shrink-0">
             <Send className="h-4 w-4" />
           </Button>
-        </div>
+        </form>
         <p className="text-[11px] text-muted-foreground text-center mt-2">
           AI guidance is advisory. Always verify with agronomic best practices.
         </p>
