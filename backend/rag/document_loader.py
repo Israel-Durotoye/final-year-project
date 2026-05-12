@@ -101,14 +101,14 @@ _CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 # Constants — must be kept in sync with rag_engine.py
 # ---------------------------------------------------------------------------
-COLLECTION_NAME  = "agronomic_knowledge"
+COLLECTION_NAME = "agronomic_knowledge"
 EMBED_MODEL_NAME = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
 
 # Chunking parameters
 # multi-qa-mpnet-base-dot-v1 max sequence length: 512 WordPiece tokens.
 # At ~4.5 chars/token, 1000 chars ≈ 222 tokens — safely within budget.
 # Overlap of 200 chars preserves ~1 sentence of cross-chunk context.
-CHUNK_SIZE    = 1000   # characters
+CHUNK_SIZE = 1000   # characters
 CHUNK_OVERLAP = 200    # characters
 
 # OCR routing heuristic: if PyMuPDF extracts fewer than this many meaningful

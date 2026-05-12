@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING
 
 from google import genai
 from google.genai import types as genai_types
+import json
 
 if TYPE_CHECKING:
     # Avoids a circular import in type hints — rag_engine is in the same package
@@ -179,12 +180,75 @@ def generate_rag_response(
         )
     client = genai.Client(api_key = resolved_key)
 
+    # ------------------------------------------------------------------ #
+    # Tool registration: include live sensor tool so Gemini can request it
+    # ------------------------------------------------------------------ #
+    def get_live_sensor_data(node_id: str) -> dict:
+        """
+        Return live telemetry for a hardware node.
+
+        Purpose and triggering guidance for the model:
+        - This function returns real-time (mocked) sensor telemetry for a
+          single hardware node identified by `node_id` (for example
+          'NODE_01' or 'NODE_A2').
+        - The model SHOULD call this function when the user explicitly asks
+          about the current state or recent readings of a specific node,
+          e.g. "What is the current soil moisture at NODE_01?",
+          "Give me the latest telemetry for node NODE_A2", or
+          "Show live sensor data for the northeast plot's node."
+        - The model MUST NOT call this function for general textbook or
+          literature questions that can be answered from the knowledge base
+          context; those should be answered using retrieved documents only.
+
+        Args:
+            node_id: The node identifier string the user referenced.
+
+        Returns:
+            A dict with the following example keys (mock telemetry):
+            {
+                "node_id": "NODE_01",
+                "timestamp_utc": "2026-05-12T12:34:56Z",
+                "soil_moisture": 23.4,         # percent
+                "soil_temperature_c": 27.1,   # Celsius
+                "ph": 5.8,
+                "nitrogen_ppm": 12.3,
+                "phosphorus_ppm": 8.1,
+                "potassium_ppm": 45.0,
+                "battery_voltage": 3.71,
+                "communication_ok": true
+            }
+
+        Note for model authors / evaluators: treat this function as an
+        authoritative source for "live" measurements — when the model
+        decides to call it, it should incorporate and cite these readings in
+        the final answer, and attribute them as live telemetry (not the
+        static knowledge base).
+        """
+        # Simple deterministic mock data — replace with real fetch in prod.
+        ts = datetime.now(timezone.utc).isoformat()
+        node = (node_id or "UNKNOWN").upper()
+        return {
+            "node_id": node,
+            "timestamp_utc": ts,
+            "soil_moisture": 21.5,
+            "soil_temperature_c": 26.8,
+            "ph": 6.1,
+            "nitrogen_ppm": 14.2,
+            "phosphorus_ppm": 9.4,
+            "potassium_ppm": 41.7,
+            "battery_voltage": 3.72,
+            "communication_ok": True,
+        }
+
     config = genai_types.GenerateContentConfig(
         temperature=temperature,
         max_output_tokens=max_output_tokens,
         top_p=DEFAULT_TOP_P,
         candidate_count=1,
         system_instruction=system_instruction,
+        # Register the callable tool so the model can request live telemetry
+        # via a `function_call`. The SDK accepts callables directly here.
+        tools=[get_live_sensor_data],
         safety_settings=[
             genai_types.SafetySetting(
                 category="HARM_CATEGORY_DANGEROUS_CONTENT",
@@ -229,19 +293,93 @@ def generate_rag_response(
     elapsed = time.perf_counter() - t_start
 
     # ------------------------------------------------------------------ #
+    # 6b.  Handle potential function_call responses                      #
+    # If the model returned a function call request, execute the tool,
+    # provide its result back to the model, and re-run generation so the
+    # final answer can incorporate the live data.
+    # ------------------------------------------------------------------ #
+    def _extract_function_call(resp):
+        # Common attribute used by the SDK
+        if getattr(resp, "function_calls", None):
+            return resp.function_calls[0]
+        # Candidate-level shims used by some SDK versions
+        candidates = getattr(resp, "candidates", None) or getattr(resp, "outputs", None) or getattr(resp, "generations", None)
+        if candidates:
+            try:
+                for c in candidates:
+                    fc = getattr(c, "function_call", None) or getattr(c, "function_calls", None)
+                    if fc:
+                        return fc[0] if isinstance(fc, list) else fc
+            except Exception:
+                pass
+        return None
+
+    func_call = _extract_function_call(response)
+    if func_call is not None:
+        # The model asked to call a function/tool.
+        logger.info("Model requested function call: %s", getattr(func_call, "name", str(func_call)))
+        # Extract arguments (some SDKs provide args as JSON string)
+        args = getattr(func_call, "arguments", {}) or {}
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:
+                args = {}
+
+        node_id = args.get("node_id") or args.get("nodeId") or args.get("node") or ""
+
+        # Execute the tool locally
+        try:
+            tool_result = get_live_sensor_data(node_id)
+        except Exception as exc:
+            logger.exception("Tool execution failed: %s", exc)
+            raise RuntimeError(f"Tool execution failed: {exc}") from exc
+
+        # Attempt to package the function response as a Part for the SDK.
+        # If the SDK doesn't support Part.from_function_response, fall back
+        # to appending the function output to the contents and regenerating.
+        # Package the history properly for the return trip
+        model_turn = response.candidates[0].content
+        
+        tool_part = genai_types.Part.from_function_response(
+            name=getattr(func_call, "name", "get_live_sensor_data"),
+            response=tool_result,  # The SDK requires a pure Python dict here, NOT a JSON string
+        )
+        tool_turn = genai_types.Content(role="user", parts=[tool_part])
+        
+        # Send the exact sequence: User asks -> Model calls tool -> User gives data
+        conversation_history = [user_content, model_turn, tool_turn]
+        
+        t_start2 = time.perf_counter()
+        
+        # The second API call with the full context!
+        response2 = client.models.generate_content(
+            model=model_name,
+            contents=conversation_history,
+            config=config,
+        )
+        
+        elapsed += time.perf_counter() - t_start2
+        answer_text = response2.text
+
+    # ------------------------------------------------------------------ #
+    # If no function call branch executed, answer_text already set above.
+    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------ #
     # 6.  Extract the response text                                       #
     # ------------------------------------------------------------------ #
-    try:
-        answer_text = response.text
-    except (ValueError, AttributeError) as exc:
-        block_reason = "UNKNOWN"
+    if func_call is None:
         try:
-            block_reason = response.prompt_feedback.block_reason.name
-        except AttributeError:
-            pass
-        raise RuntimeError(
-            f"Gemini returned no usable text. Block reason: {block_reason}."
-        ) from exc
+            answer_text = response.text
+        except (ValueError, AttributeError) as exc:
+            block_reason = "UNKNOWN"
+            try:
+                block_reason = response.prompt_feedback.block_reason.name
+            except AttributeError:
+                pass
+            raise RuntimeError(
+                f"Gemini returned no usable text. Block reason: {block_reason}."
+            ) from exc
 
     logger.info(
         "RAG response generated in %.3fs | Model: %s | "
