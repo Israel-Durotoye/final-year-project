@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Sprout, Mail, Lock, ArrowRight } from "lucide-react";
+import { Sprout, Mail, Lock, ArrowRight, Eye, EyeOff } from "lucide-react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,6 +11,7 @@ export default function Login() {
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
@@ -115,13 +116,24 @@ export default function Login() {
                   <Lock className="h-4 w-4 text-muted-foreground" />
                 </div>
                 <Input
-                  type="password"
+                  type={showPassword ? "text" : "password"}
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••"
-                  className="pl-10 h-12 bg-black/5 dark:bg-black/20 border-white/10 dark:border-white/5 focus:border-primary focus:ring-1 focus:ring-primary font-mono tracking-widest text-sm"
+                  className="pl-10 pr-10 h-12 bg-black/5 dark:bg-black/20 border-white/10 dark:border-white/5 focus:border-primary focus:ring-1 focus:ring-primary font-mono tracking-widest text-sm"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute inset-y-0 right-0 flex items-center pr-3 text-muted-foreground hover:text-foreground transition-colors focus:outline-none"
+                >
+                  {showPassword ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </button>
               </div>
             </div>
 
@@ -130,7 +142,7 @@ export default function Login() {
               disabled={isLoading}
               className="w-full h-12 mt-4 gradient-primary text-primary-foreground hover:opacity-95 shadow-glow font-bold tracking-widest uppercase text-xs"
             >
-              {isLoading ? "Authenticating..." : (isSignUp ? "Create Account" : "Sign In")}
+              {isLoading ? "Signing in..." : (isSignUp ? "Create Account" : "Sign In")}
               {!isLoading && <ArrowRight className="h-4 w-4 ml-2" />}
             </Button>
           </form>

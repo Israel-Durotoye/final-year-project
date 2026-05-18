@@ -12,7 +12,7 @@ export const ProtectedRoute = () => {
         <div className="h-16 w-16 rounded-2xl bg-transparent border-2 border-primary flex items-center justify-center shadow-glow mb-4 animate-pulse">
           <Sprout className="h-8 w-8 text-primary animate-bounce" />
         </div>
-        <p className="text-xs font-mono tracking-[0.3em] text-muted-foreground uppercase animate-pulse">Authenticating...</p>
+        <p className="text-xs font-mono tracking-[0.3em] text-muted-foreground uppercase animate-pulse">Loading...</p>
       </div>
     );
   }

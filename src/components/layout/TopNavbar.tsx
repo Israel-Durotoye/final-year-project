@@ -19,7 +19,7 @@ const navItems = [
 export const TopNavbar = () => {
   const { pathname } = useLocation();
   const { theme, setTheme } = useTheme();
-  
+
   return (
     <header className="absolute top-0 left-0 right-0 z-40 w-full bg-transparent">
       <div className="container flex h-20 items-center justify-between px-6 lg:px-12">
@@ -28,8 +28,8 @@ export const TopNavbar = () => {
             <Sprout className="h-5 w-5 text-primary" />
           </div>
           <div>
-            <h1 className="text-lg font-bold font-display tracking-widest text-foreground uppercase">Soil<span className="text-primary">Dr</span></h1>
-            <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-primary/70">Edge Plot System</p>
+            <h1 className="text-lg font-bold font-display tracking-widest text-foreground uppercase">Soil<span className="text-primary">Net</span></h1>
+            <p className="text-[9px] font-mono uppercase tracking-[0.2em] text-primary/70">Smart Farming System</p>
           </div>
         </NavLink>
 
