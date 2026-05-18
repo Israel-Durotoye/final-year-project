@@ -1,68 +1,184 @@
-import { MapPin, Radio } from "lucide-react";
-import { SensorNode } from "@/lib/mockData";
+import { useState, useMemo, useEffect } from "react";
+import { MapContainer, TileLayer, Marker, Tooltip, Polyline, useMap } from "react-leaflet";
+import L from "leaflet";
+import "leaflet/dist/leaflet.css";
+import { Layers, Map as MapIcon, Maximize } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface Props {
-  nodes: SensorNode[];
+  nodes: any[];
   height?: string;
   selectedId?: string;
   onSelect?: (id: string) => void;
+  interactive?: boolean;
+  children?: React.ReactNode;
 }
 
-// Decorative map preview (no external map service required)
-export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect }: Props) => {
-  // Normalize lat/lng to plotting %
-  const lats = nodes.map((n) => n.lat);
-  const lngs = nodes.map((n) => n.lng);
-  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
-  const dLat = maxLat - minLat || 1;
-  const dLng = maxLng - minLng || 1;
+// Center map helper component
+const MapCenterer = ({ center, zoom }: { center: [number, number], zoom: number }) => {
+  const map = useMap();
+  useEffect(() => {
+    map.setView(center, zoom);
+  }, [center, zoom, map]);
+  return null;
+};
+
+const ZoomResetControl = ({ coordinates }: { coordinates: [number, number][] }) => {
+  const map = useMap();
+  if (coordinates.length === 0) return null;
+  return (
+    <div className="leaflet-top leaflet-left" style={{ top: '80px' }}>
+      <div className="leaflet-control leaflet-bar">
+        <button
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const bounds = L.latLngBounds(coordinates);
+            map.fitBounds(bounds, { padding: [50, 50] });
+          }}
+          className="w-[34px] h-[34px] flex items-center justify-center bg-background border-border text-foreground hover:bg-muted transition-colors"
+          title="Reset View to All Nodes"
+          type="button"
+        >
+          <Maximize className="h-[14px] w-[14px]" />
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, interactive = true, children }: Props) => {
+  const [mapStyle, setMapStyle] = useState<"street" | "satellite">("satellite");
+
+  // Normalize nodes (handles both mock data and Supabase schema)
+  const normalizedNodes = useMemo(() => {
+    return nodes.map((n) => {
+      // Prioritize node_id. If a table has an 'id' primary key, we don't want it to override the node_id
+      const id = n.node_id || n.id;
+      const lat = Number(n.lat ?? n.latitude);
+      const lng = Number(n.lng ?? n.longitude);
+      const isOnline = n.status === "online" || n.communication_ok === true || n.communication_ok === 1 || n.communication_ok === "true" || n.communication_ok === undefined;
+      return { ...n, id: String(id), lat, lng, isOnline };
+    }).filter((n) => !isNaN(n.lat) && !isNaN(n.lng));
+  }, [nodes]);
+
+  const defaultCenter: [number, number] = normalizedNodes.length > 0 
+    ? [normalizedNodes[0].lat, normalizedNodes[0].lng] 
+    : [36.7378, -119.7871]; // Default to Fresno area if empty
+
+  // Custom marker icon using HTML
+  const createMarkerIcon = (isSelected: boolean, isOnline: boolean) => {
+    const bgColor = isOnline ? "var(--primary)" : "var(--muted)";
+    const textColor = isOnline ? "var(--primary-foreground)" : "var(--muted-foreground)";
+    const ring = isSelected ? `box-shadow: 0 0 0 4px hsl(var(--primary) / 0.3); transform: scale(1.15);` : "";
+    
+    return L.divIcon({
+      className: "custom-node-marker",
+      html: `
+        <div style="
+          width: 28px; 
+          height: 28px; 
+          background-color: hsl(${bgColor}); 
+          border-radius: 8px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: hsl(${textColor});
+          transition: all 0.3s ease;
+          ${ring}
+        ">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg>
+        </div>
+      `,
+      iconSize: [28, 28],
+      iconAnchor: [14, 14],
+      popupAnchor: [0, -14],
+      tooltipAnchor: [0, -14]
+    });
+  };
+
+  const coordinates = normalizedNodes.map(n => [n.lat, n.lng] as [number, number]);
 
   return (
-    <div className={cn("relative w-full rounded-xl border border-border overflow-hidden", height)}
-      style={{
-        background: "radial-gradient(ellipse at top left, hsl(var(--primary-soft)), hsl(var(--background))), repeating-linear-gradient(0deg, hsl(var(--border)) 0 1px, transparent 1px 48px), repeating-linear-gradient(90deg, hsl(var(--border)) 0 1px, transparent 1px 48px)"
-      }}>
-      {/* Decorative field shapes */}
-      <svg className="absolute inset-0 w-full h-full opacity-40" preserveAspectRatio="none" viewBox="0 0 400 300">
-        <path d="M40,60 Q120,40 200,80 T380,90 L380,150 Q280,140 180,170 T20,180 Z" fill="hsl(var(--primary) / 0.08)" />
-        <path d="M20,200 Q140,180 240,210 T390,230 L390,290 L20,290 Z" fill="hsl(var(--primary) / 0.12)" />
-      </svg>
+    <div className={cn("relative w-full rounded-xl border border-border overflow-hidden isolate", height)}>
+      <MapContainer
+        center={defaultCenter}
+        zoom={normalizedNodes.length > 0 ? 15 : 4}
+        className="h-full w-full z-0"
+        zoomControl={interactive}
+        dragging={interactive}
+        scrollWheelZoom={interactive}
+        doubleClickZoom={interactive}
+      >
+        <MapCenterer center={defaultCenter} zoom={normalizedNodes.length > 0 ? 15 : 4} />
+        {interactive && <ZoomResetControl coordinates={coordinates} />}
+        
+        {mapStyle === "street" ? (
+          <TileLayer
+            url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> contributors'
+          />
+        ) : (
+          <TileLayer
+            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            attribution="Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community"
+          />
+        )}
 
-      {nodes.map((n) => {
-        const x = ((n.lng - minLng) / dLng) * 80 + 10;
-        const y = (1 - (n.lat - minLat) / dLat) * 70 + 12;
-        const isSelected = selectedId === n.id;
-        return (
-          <button
-            key={n.id}
-            onClick={() => onSelect?.(n.id)}
-            style={{ left: `${x}%`, top: `${y}%` }}
-            className="absolute -translate-x-1/2 -translate-y-1/2 group"
+        {/* Dotted lines connecting nodes */}
+        {coordinates.length > 1 && (
+          <Polyline 
+            positions={coordinates} 
+            pathOptions={{ color: "hsl(var(--primary))", dashArray: "6, 8", weight: 2, opacity: 0.8, interactive: false }} 
+          />
+        )}
+
+        {/* Dynamic Overlay Layers Injected by Parent */}
+        {children}
+
+        {normalizedNodes.map((n) => (
+          <Marker 
+            key={n.id} 
+            position={[n.lat, n.lng]}
+            icon={createMarkerIcon(selectedId === n.id, n.isOnline)}
+            eventHandlers={{
+              click: () => onSelect?.(n.id)
+            }}
           >
-            <div className={cn(
-              "relative h-9 w-9 rounded-full flex items-center justify-center shadow-lg transition-transform",
-              n.status === "online" ? "bg-primary text-primary-foreground" : "bg-muted-foreground/60 text-background",
-              isSelected && "scale-125 ring-4 ring-primary/30"
-            )}>
-              {n.status === "online" && (
-                <span className="absolute inset-0 rounded-full bg-primary/40 live-dot" />
-              )}
-              <Radio className="h-4 w-4 relative z-10" />
-            </div>
-            <div className="absolute left-1/2 -translate-x-1/2 mt-1.5 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity bg-card border border-border rounded-md px-2 py-1 text-xs font-medium shadow-md pointer-events-none">
-              {n.id}
-            </div>
-          </button>
-        );
-      })}
+            {interactive && (
+              <Tooltip direction="top" offset={[0, -10]} opacity={1} permanent={false} interactive={false}>
+                <span className="font-bold font-display text-xs uppercase tracking-wider text-black">{n.id}</span>
+              </Tooltip>
+            )}
+          </Marker>
+        ))}
+      </MapContainer>
 
-      <div className="absolute bottom-3 left-3 bg-card/90 backdrop-blur border border-border rounded-lg px-3 py-2 flex items-center gap-2 text-xs">
-        <MapPin className="h-3.5 w-3.5 text-primary" />
-        <span className="font-medium">{nodes.length} nodes</span>
-        <span className="text-muted-foreground">· Fresno, CA</span>
-      </div>
+      {/* Aesthetic Layer Toggle */}
+      {interactive && (
+        <div className="absolute top-4 right-4 z-[400] flex bg-background/80 backdrop-blur-md border border-white/10 rounded-lg p-1 shadow-lg">
+          <button
+            onClick={() => setMapStyle("street")}
+            className={cn(
+              "px-3 py-1.5 rounded-md text-[10px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all",
+              mapStyle === "street" ? "bg-primary text-primary-foreground shadow-sm" : "text-foreground/60 hover:text-foreground"
+            )}
+            type="button"
+          >
+            <MapIcon className="h-3 w-3" /> Map
+          </button>
+          <button
+            onClick={() => setMapStyle("satellite")}
+            className={cn(
+              "px-3 py-1.5 rounded-md text-[10px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all",
+              mapStyle === "satellite" ? "bg-primary text-primary-foreground shadow-sm" : "text-foreground/60 hover:text-foreground"
+            )}
+            type="button"
+          >
+            <Layers className="h-3 w-3" /> Sat
+          </button>
+        </div>
+      )}
     </div>
   );
 };

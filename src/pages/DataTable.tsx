@@ -1,28 +1,66 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { telemetryLogs } from "@/lib/mockData";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Download, Calendar, ChevronLeft, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
-
-const PAGE_SIZE = 12;
+// Initialize Supabase client using Vite env vars (or fall back to process.env)
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || (process.env.VITE_SUPABASE_URL as string) || "";
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || (process.env.VITE_SUPABASE_ANON_KEY as string) || "";
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const DataTable = () => {
-  const [page, setPage] = useState(0);
-  const total = Math.ceil(telemetryLogs.length / PAGE_SIZE);
-  const rows = telemetryLogs.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const [telemetry, setTelemetry] = useState<Array<any>>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [startDate, setStartDate] = useState<string | null>(null);
+  const [endDate, setEndDate] = useState<string | null>(null);
 
-  const downloadCSV = () => {
-    const header = "Node ID,N,P,K,Moisture,Humidity,Temp,Lat,Lng,Timestamp\n";
-    const body = telemetryLogs.map(r =>
-      `${r.nodeId},${r.n},${r.p},${r.k},${r.moisture},${r.humidity},${r.temp},${r.lat},${r.lng},${r.timestamp}`
-    ).join("\n");
-    const blob = new Blob([header + body], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = "telemetry.csv"; a.click();
-    URL.revokeObjectURL(url);
-    toast.success("CSV downloaded");
+  const fetchTelemetry = async (opts?: { start?: string | null; end?: string | null }) => {
+    setLoading(true);
+    setError(null);
+    try {
+      let query: any = supabase
+        .from("sensor_telemetry")
+        .select("*")
+        .order("timestamp_utc", { ascending: false });
+
+      if (opts?.start) {
+        const startISO = new Date(opts.start).toISOString();
+        query = query.gte("timestamp_utc", startISO);
+      }
+      if (opts?.end) {
+        // include end of day by default if only date provided
+        const endISO = new Date(opts.end).toISOString();
+        query = query.lte("timestamp_utc", endISO);
+      }
+
+      const { data, error: sbError } = await query;
+      if (sbError) throw sbError;
+
+      setTelemetry(Array.isArray(data) ? data : []);
+    } catch (err: any) {
+      setError(err.message || String(err));
+      setTelemetry([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    // Load unfiltered on mount
+    fetchTelemetry();
+  }, []);
+
+  const handleFilterApply = () => {
+    fetchTelemetry({ start: startDate, end: endDate });
+  };
+
+  const handleClear = () => {
+    setStartDate(null);
+    setEndDate(null);
+    fetchTelemetry();
   };
 
   return (
@@ -33,59 +71,62 @@ const DataTable = () => {
           <div className="flex items-center gap-2 flex-1">
             <div className="relative flex-1">
               <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input type="date" className="pl-9" defaultValue="2026-04-23" />
+              <Input type="date" className="pl-9" value={startDate ?? ""} onChange={(e) => setStartDate(e.target.value || null)} />
             </div>
             <span className="text-sm text-muted-foreground">to</span>
             <div className="relative flex-1">
               <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input type="date" className="pl-9" defaultValue="2026-04-30" />
+              <Input type="date" className="pl-9" value={endDate ?? ""} onChange={(e) => setEndDate(e.target.value || null)} />
             </div>
+            <Button variant="outline" onClick={handleClear} className="ml-2">Clear</Button>
+            <Button onClick={handleFilterApply} className="ml-2">Apply</Button>
           </div>
-          <Button variant="outline" onClick={downloadCSV} className="gap-2">
-            <Download className="h-4 w-4" /> Download CSV
-          </Button>
         </div>
 
         <div className="bg-card border border-border rounded-xl shadow-card overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-secondary/60">
-                <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground">
-                  {["Node ID","N","P","K","Moisture","Humidity","Temp","Lat","Lng","Timestamp"].map(h => (
-                    <th key={h} className="px-4 py-3 font-semibold">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i} className="border-t border-border hover:bg-secondary/40 transition-colors">
-                    <td className="px-4 py-3 font-semibold text-primary">{r.nodeId}</td>
-                    <td className="px-4 py-3">{r.n}</td>
-                    <td className="px-4 py-3">{r.p}</td>
-                    <td className="px-4 py-3">{r.k}</td>
-                    <td className="px-4 py-3">{r.moisture}%</td>
-                    <td className="px-4 py-3">{r.humidity}%</td>
-                    <td className="px-4 py-3">{r.temp}°C</td>
-                    <td className="px-4 py-3 text-muted-foreground">{r.lat.toFixed(4)}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{r.lng.toFixed(4)}</td>
-                    <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{new Date(r.timestamp).toLocaleString()}</td>
+            {loading ? (
+              <div className="p-8 text-center">Loading telemetry…</div>
+            ) : telemetry.length === 0 ? (
+              <div className="p-12 text-center text-muted-foreground">No historical telemetry records found.</div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="bg-secondary/60">
+                  <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground">
+                    {[
+                      "NODE ID","N","P","K","MOISTURE","HUMIDITY","TEMP","pH","BATTERY","LAT","LNG","STATUS","TIMESTAMP"
+                    ].map(h => (
+                      <th key={h} className="px-4 py-3 font-semibold">{h}</th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div className="flex items-center justify-between p-4 border-t border-border">
-            <p className="text-sm text-muted-foreground">
-              Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, telemetryLogs.length)} of {telemetryLogs.length}
-            </p>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage(p => p - 1)}>
-                <ChevronLeft className="h-4 w-4" /> Prev
-              </Button>
-              <Button variant="outline" size="sm" disabled={page >= total - 1} onClick={() => setPage(p => p + 1)}>
-                Next <ChevronRight className="h-4 w-4" />
-              </Button>
-            </div>
+                </thead>
+                <tbody>
+                  {telemetry.map((r, i) => (
+                    <tr key={i} className="border-t border-border hover:bg-secondary/40 transition-colors">
+                      <td className="px-4 py-3 font-semibold text-primary">{r.node_id}</td>
+                      <td className="px-4 py-3">{r.nitrogen_ppm ?? "-"}</td>
+                      <td className="px-4 py-3">{r.phosphorus_ppm ?? "-"}</td>
+                      <td className="px-4 py-3">{r.potassium_ppm ?? "-"}</td>
+                      <td className="px-4 py-3">{typeof r.soil_moisture === 'number' ? `${r.soil_moisture}%` : (r.soil_moisture ?? "-")}</td>
+                      <td className="px-4 py-3">{typeof r.humidity === 'number' ? `${r.humidity}%` : (r.humidity ?? "-")}</td>
+                      <td className="px-4 py-3">{typeof r.soil_temperature_c === 'number' ? `${r.soil_temperature_c}°C` : (r.soil_temperature_c ?? "-")}</td>
+                      <td className="px-4 py-3">{r.ph ?? "-"}</td>
+                      <td className="px-4 py-3">{typeof r.battery_voltage === 'number' ? `${r.battery_voltage}V` : (r.battery_voltage ?? "-")}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{typeof r.latitude === 'number' ? r.latitude.toFixed(4) : (r.latitude ?? "-")}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{typeof r.longitude === 'number' ? r.longitude.toFixed(4) : (r.longitude ?? "-")}</td>
+                      <td className="px-4 py-3">
+                        {r.communication_ok ? (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-green-100 text-green-800 text-xs">Online</span>
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-red-100 text-red-800 text-xs">Offline</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{r.timestamp_utc ? new Date(r.timestamp_utc).toLocaleString() : "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
       </div>

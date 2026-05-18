@@ -11,8 +11,8 @@ const Settings = () => (
       <section className="bg-card border border-border rounded-xl shadow-card p-6 space-y-4">
         <h2 className="font-semibold text-lg">Profile</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="space-y-2"><Label>Full name</Label><Input defaultValue="Aanya Kumar" /></div>
-          <div className="space-y-2"><Label>Email</Label><Input defaultValue="aanya@greenvalley.farm" /></div>
+          <div className="space-y-2"><Label>Full name</Label><Input defaultValue="Israel Durotoye" /></div>
+          <div className="space-y-2"><Label>Email</Label><Input defaultValue="israeldurotoye@gmail.com" /></div>
         </div>
       </section>
 

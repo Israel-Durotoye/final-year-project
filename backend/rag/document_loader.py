@@ -83,24 +83,19 @@ if TYPE_CHECKING:
     # Import only for type hints — avoids loading heavy models at module import
     from backend.rag.rag_engine import RAGEngine
 
-# ---------------------------------------------------------------------------
 # Logging
-# ---------------------------------------------------------------------------
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
+
 # Paths (mirrors rag_engine.py so both modules use the same ChromaDB store)
-# ---------------------------------------------------------------------------
 _BACKEND_DIR  = Path(__file__).parent.parent
 _KB_DIR       = _BACKEND_DIR / "data" / "knowledge_base"
 _CHROMA_DIR   = _BACKEND_DIR / "data" / "chroma_db"
 
-_KB_DIR.mkdir(parents=True, exist_ok=True)
-_CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+_KB_DIR.mkdir(parents = True, exist_ok = True)
+_CHROMA_DIR.mkdir(parents = True, exist_ok = True)
 
-# ---------------------------------------------------------------------------
 # Constants — must be kept in sync with rag_engine.py
-# ---------------------------------------------------------------------------
 COLLECTION_NAME = "agronomic_knowledge"
 EMBED_MODEL_NAME = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
 
@@ -108,8 +103,8 @@ EMBED_MODEL_NAME = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
 # multi-qa-mpnet-base-dot-v1 max sequence length: 512 WordPiece tokens.
 # At ~4.5 chars/token, 1000 chars ≈ 222 tokens — safely within budget.
 # Overlap of 200 chars preserves ~1 sentence of cross-chunk context.
-CHUNK_SIZE = 1000   # characters
-CHUNK_OVERLAP = 200    # characters
+CHUNK_SIZE = 1000 # characters
+CHUNK_OVERLAP = 200 # characters
 
 # OCR routing heuristic: if PyMuPDF extracts fewer than this many meaningful
 # characters from a page, the page is considered image-dominant and OCR runs.
@@ -132,10 +127,7 @@ UPSERT_BATCH_SIZE = 128
 EMBED_BATCH_SIZE = 32
 
 
-# ---------------------------------------------------------------------------
 # Data contracts
-# ---------------------------------------------------------------------------
-
 @dataclass
 class ExtractedPage:
     """Text extracted from a single PDF page."""
@@ -698,10 +690,7 @@ class DocumentLoader:
 
         return " ".join(text_blocks)
 
-    # ------------------------------------------------------------------
     # Private: chunking
-    # ------------------------------------------------------------------
-
     def _chunk_extracted_page(self, extracted: ExtractedPage) -> list[ChunkRecord]:
         """
         Split a single ExtractedPage's text into ChunkRecord objects.
@@ -773,10 +762,7 @@ class DocumentLoader:
         )
         return stats
 
-    # ------------------------------------------------------------------
     # Private: embedding & storage
-    # ------------------------------------------------------------------
-
     def _embed_and_store(self, chunks: list[ChunkRecord]) -> int:
         """
         Embed all chunks in batches and upsert them into ChromaDB.
@@ -796,7 +782,7 @@ class DocumentLoader:
 
         for batch_idx in range(n_batches):
             start = batch_idx * UPSERT_BATCH_SIZE
-            end   = start + UPSERT_BATCH_SIZE
+            end = start + UPSERT_BATCH_SIZE
             batch = chunks[start:end]
 
             texts = [c.text for c in batch]
@@ -806,10 +792,10 @@ class DocumentLoader:
             try:
                 embeddings = self._embedding_model.encode(
                     texts,
-                    batch_size=EMBED_BATCH_SIZE,
-                    normalize_embeddings=True,   # Required for cosine similarity
-                    show_progress_bar=False,
-                    convert_to_numpy=True,
+                    batch_size = EMBED_BATCH_SIZE,
+                    normalize_embeddings = True,   # Required for cosine similarity
+                    show_progress_bar = False,
+                    convert_to_numpy = True,
                 ).tolist()
             except Exception as exc:
                 logger.error(
@@ -820,23 +806,23 @@ class DocumentLoader:
 
             embed_time = time.perf_counter() - t_embed
             logger.debug(
-                "  Batch %d/%d: embedded %d chunks in %.2fs",
+                "Batch %d/%d: embedded %d chunks in %.2fs",
                 batch_idx + 1, n_batches, len(batch), embed_time,
             )
 
-            # ── Upsert to ChromaDB ─────────────────────────────────────
+            # Upsert to ChromaDB
             try:
                 self._collection.upsert(
-                    ids=[c.chunk_id for c in batch],
-                    embeddings=embeddings,
-                    documents=texts,
-                    metadatas=[
+                    ids = [c.chunk_id for c in batch],
+                    embeddings = embeddings,
+                    documents = texts,
+                    metadatas = [
                         {
-                            "source":             c.source,
-                            "page":               c.page,
-                            "chunk_index":        c.chunk_index,
-                            "char_count":         c.char_count,
-                            "extraction_method":  c.extraction_method,
+                            "source": c.source,
+                            "page": c.page,
+                            "chunk_index": c.chunk_index,
+                            "char_count": c.char_count,
+                            "extraction_method": c.extraction_method,
                         }
                         for c in batch
                     ],
@@ -890,10 +876,10 @@ class DocumentLoader:
             # use_gpu=False forces CPU mode (safe default for servers without CUDA)
             # show_log=False suppresses PaddlePaddle's verbose model download logs
             self._ocr_engine = PaddleOCR(
-                use_angle_cls=True,
-                lang="en",
-                use_gpu=False,
-                show_log=False,
+                use_angle_cls = True,
+                lang = "en",
+                use_gpu = False,
+                show_log = False,
             )
             logger.info("PaddleOCR initialised.")
         except ImportError as exc:
@@ -908,8 +894,8 @@ class DocumentLoader:
             return
 
         client = chromadb.PersistentClient(
-            path=str(self._chroma_dir),
-            settings=Settings(anonymized_telemetry=False),
+            path = str(self._chroma_dir),
+            settings = Settings(anonymized_telemetry=False),
         )
 
         if clear:
@@ -923,8 +909,8 @@ class DocumentLoader:
                 pass   # Collection may not exist yet — that's fine
 
         self._collection = client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
+            name = COLLECTION_NAME,
+            metadata = {"hnsw:space": "cosine"},
         )
         doc_count = self._collection.count()
         logger.info(
@@ -932,10 +918,7 @@ class DocumentLoader:
             COLLECTION_NAME, doc_count,
         )
 
-    # ------------------------------------------------------------------
     # Private: utilities
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _build_chunk_id(
         filename: str,
@@ -982,19 +965,15 @@ class DocumentLoader:
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
-
-# ---------------------------------------------------------------------------
 # CLI Entry Point
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     import argparse
     import sys
 
     logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        stream=sys.stdout,
+        level = logging.INFO,
+        format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        stream = sys.stdout,
     )
 
     parser = argparse.ArgumentParser(
@@ -1002,53 +981,53 @@ if __name__ == "__main__":
             "Soil Doctor — Agronomic Knowledge Base Ingestion Tool\n"
             "Processes PDFs in the knowledge base directory and populates ChromaDB."
         ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        formatter_class = argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--kb-dir",
-        type=Path,
-        default=_KB_DIR,
-        help=f"Path to the directory containing agronomic PDF files. "
+        type = Path,
+        default = _KB_DIR,
+        help = f"Path to the directory containing agronomic PDF files. "
              f"Default: {_KB_DIR}",
     )
     parser.add_argument(
         "--clear",
-        action="store_true",
-        default=False,
-        help="Delete the existing ChromaDB collection before ingesting. "
+        action = "store_true",
+        default = False,
+        help = "Delete the existing ChromaDB collection before ingesting. "
              "Use this to do a clean rebuild of the knowledge base.",
     )
     parser.add_argument(
         "--no-ocr",
-        action="store_true",
-        default=False,
-        help="Disable PaddleOCR. Useful for text-only PDFs or when "
+        action = "store_true",
+        default = False,
+        help = "Disable PaddleOCR. Useful for text-only PDFs or when "
              "PaddleOCR is not installed.",
     )
     parser.add_argument(
         "--batch-size",
-        type=int,
-        default=EMBED_BATCH_SIZE,
-        metavar="N",
-        help=f"Embedding batch size. Lower values use less memory. "
+        type = int,
+        default = EMBED_BATCH_SIZE,
+        metavar = "N",
+        help = f"Embedding batch size. Lower values use less memory. "
              f"Default: {EMBED_BATCH_SIZE}",
     )
     parser.add_argument(
         "--chunk-size",
-        type=int,
-        default=CHUNK_SIZE,
-        help=f"Maximum characters per chunk. Default: {CHUNK_SIZE}",
+        type = int,
+        default = CHUNK_SIZE,
+        help = f"Maximum characters per chunk. Default: {CHUNK_SIZE}",
     )
     parser.add_argument(
         "--chunk-overlap",
-        type=int,
-        default=CHUNK_OVERLAP,
-        help=f"Overlap characters between consecutive chunks. "
+        type = int,
+        default = CHUNK_OVERLAP,
+        help = f"Overlap characters between consecutive chunks. "
              f"Default: {CHUNK_OVERLAP}",
     )
     args = parser.parse_args()
 
-    # ── Validate args ──────────────────────────────────────────────────────
+    # Validate args
     if not args.kb_dir.exists():
         print(f"\n[ERROR] Knowledge base directory not found: {args.kb_dir}")
         print(f"        Create it and place your Markdown (.md) files there, then re-run.")
@@ -1060,17 +1039,17 @@ if __name__ == "__main__":
         print(f"          Place your golden_dataset.md (or other .md files) there and re-run.")
         sys.exit(0)
 
-    # ── Print startup banner ───────────────────────────────────────────────
+    # Print startup banner
     print("\n" + "━" * 60)
-    print("  SOIL DOCTOR — KNOWLEDGE BASE INGESTION")
+    print("SOIL DOCTOR — KNOWLEDGE BASE INGESTION")
     print("━" * 60)
-    print(f"  Knowledge base  : {args.kb_dir}")
-    print(f"  Markdown files to process : {md_count}")
-    print(f"  ChromaDB path   : {_CHROMA_DIR}")
-    print(f"  Embedding model : {EMBED_MODEL_NAME}")
-    print(f"  Chunk size      : {args.chunk_size} chars / {args.chunk_overlap} overlap")
-    print(f"  OCR             : {'DISABLED (--no-ocr)' if args.no_ocr else 'ENABLED'}")
-    print(f"  Clear existing  : {'YES — will delete current collection' if args.clear else 'No'}")
+    print(f"Knowledge base: {args.kb_dir}")
+    print(f"Markdown files to process: {md_count}")
+    print(f"ChromaDB path: {_CHROMA_DIR}")
+    print(f"Embedding model: {EMBED_MODEL_NAME}")
+    print(f"Chunk size: {args.chunk_size} chars / {args.chunk_overlap} overlap")
+    print(f"OCR: {'DISABLED (--no-ocr)' if args.no_ocr else 'ENABLED'}")
+    print(f"Clear existing: {'YES — will delete current collection' if args.clear else 'No'}")
     print("━" * 60 + "\n")
 
     if args.clear:
@@ -1082,18 +1061,18 @@ if __name__ == "__main__":
             print("Aborted.")
             sys.exit(0)
 
-    # ── Run ingestion ──────────────────────────────────────────────────────
+    # Run ingestion
     loader = DocumentLoader(
-        chunk_size=args.chunk_size,
-        chunk_overlap=args.chunk_overlap,
-        enable_ocr=not args.no_ocr,
+        chunk_size = args.chunk_size,
+        chunk_overlap = args.chunk_overlap,
+        enable_ocr = not args.no_ocr,
     )
 
     try:
         stats = loader.ingest_directory(
-            kb_dir=args.kb_dir,
-            rag_engine=None,   # No live server during CLI run
-            clear=args.clear,
+            kb_dir = args.kb_dir,
+            rag_engine = None,   # No live server during CLI run
+            clear = args.clear,
         )
     except KeyboardInterrupt:
         print("\n\n[INTERRUPTED] Ingestion stopped by user. "
@@ -1104,13 +1083,13 @@ if __name__ == "__main__":
         logger.exception("Unhandled error during ingestion")
         sys.exit(1)
 
-    # ── Print final summary ────────────────────────────────────────────────
+    # Print final summary
     print("\n" + "━" * 60)
-    print("  INGESTION SUMMARY")
+    print("INGESTION SUMMARY")
     print("━" * 60)
     for line in str(stats).splitlines():
-        print(f"  {line}")
+        print(f"{line}")
     print("━" * 60)
-    print("\n  Knowledge base is ready.")
-    print("  Start the API server with:")
-    print("      uvicorn main:app --host 0.0.0.0 --port 8000\n")
+    print("\nKnowledge base is ready.")
+    print("Start the API server with:")
+    print("uvicorn main:app --host 0.0.0.0 --port 8000\n")

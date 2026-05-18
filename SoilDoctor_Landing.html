@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Soil Doctor — Precision Soil Intelligence</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Unbounded:wght@300;400;700;900&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --void:#080c08;--obsidian:#0d120d;--panel:#111811;--rim:#1a261a;
+  --volt:#7fff00;--volt-dim:#4db300;--volt-ghost:rgba(127,255,0,0.07);
+  --volt-glow:rgba(127,255,0,0.35);
+  --white:#f0f5f0;--grey:#8a9a8a;--dim:#3a4a3a;
+  --mono:'Space Mono',monospace;--display:'Unbounded',sans-serif;--ui:'Syne',sans-serif;
+}
+html{scroll-behavior:smooth}
+body{background:var(--void);color:var(--white);font-family:var(--ui);overflow-x:hidden;cursor:none}
+
+#cursor{position:fixed;top:0;left:0;width:12px;height:12px;background:var(--volt);border-radius:50%;pointer-events:none;z-index:9999;mix-blend-mode:difference;transition:transform 0.15s ease}
+#cursor-ring{position:fixed;top:0;left:0;width:36px;height:36px;border:1px solid var(--volt);border-radius:50%;pointer-events:none;z-index:9998;opacity:0.5;transition:all 0.08s ease}
+
+body::before{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:100;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.08) 2px,rgba(0,0,0,0.08) 4px);
+  animation:scanmove 8s linear infinite;
+}
+@keyframes scanmove{from{background-position:0 0}to{background-position:0 40px}}
+
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:500;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:20px 48px;
+  border-bottom:1px solid var(--dim);
+  background:rgba(8,12,8,0.85);
+  backdrop-filter:blur(20px);
+}
+.nav-logo{display:flex;align-items:center;gap:12px;text-decoration:none}
+.logo-mark{width:32px;height:32px;position:relative;display:flex;align-items:center;justify-content:center}
+.logo-hex{position:absolute;inset:0;border:2px solid var(--volt);clip-path:polygon(50% 0%,100% 25%,100% 75%,50% 100%,0% 75%,0% 25%);animation:hexspin 8s linear infinite}
+@keyframes hexspin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+.logo-dot{width:6px;height:6px;background:var(--volt);border-radius:50%;animation:pulse-dot 2s ease-in-out infinite}
+@keyframes pulse-dot{0%,100%{box-shadow:0 0 0 0 var(--volt-glow)}50%{box-shadow:0 0 0 8px transparent}}
+.logo-text{font-family:var(--display);font-size:14px;font-weight:700;letter-spacing:0.12em;color:var(--white)}
+.logo-text span{color:var(--volt)}
+.nav-links{display:flex;gap:32px;list-style:none}
+.nav-links a{font-family:var(--mono);font-size:11px;color:var(--grey);text-decoration:none;letter-spacing:0.1em;text-transform:uppercase;transition:color 0.2s;position:relative}
+.nav-links a::after{content:'';position:absolute;bottom:-4px;left:0;width:0;height:1px;background:var(--volt);transition:width 0.3s}
+.nav-links a:hover{color:var(--volt)}
+.nav-links a:hover::after{width:100%}
+.nav-cta{font-family:var(--mono);font-size:11px;letter-spacing:0.1em;text-transform:uppercase;padding:10px 24px;border:1px solid var(--volt);background:transparent;color:var(--volt);cursor:none;transition:all 0.2s;position:relative;overflow:hidden}
+.nav-cta::before{content:'';position:absolute;inset:0;background:var(--volt);transform:translateX(-101%);transition:transform 0.25s ease}
+.nav-cta:hover::before{transform:translateX(0)}
+.nav-cta:hover{color:var(--void)}
+.nav-cta span{position:relative;z-index:1}
+
+#field-canvas{position:fixed;inset:0;z-index:0;opacity:0.6}
+
+.hero{position:relative;z-index:10;min-height:100vh;display:flex;align-items:center;padding:120px 48px 80px;gap:64px}
+.hero-left{flex:1;max-width:640px}
+.system-tag{display:inline-flex;align-items:center;gap:10px;font-family:var(--mono);font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:var(--volt);border:1px solid var(--dim);padding:8px 16px;margin-bottom:32px;position:relative}
+.system-tag::before{content:'';position:absolute;top:-1px;left:-1px;right:-1px;bottom:-1px;border:1px solid var(--volt);opacity:0;animation:tag-border 3s ease-in-out infinite}
+@keyframes tag-border{0%,100%{opacity:0}50%{opacity:0.4}}
+.tag-blink{width:6px;height:6px;background:var(--volt);border-radius:50%;animation:blink 1s step-end infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+h1{font-family:var(--display);font-weight:900;font-size:clamp(52px,7vw,88px);line-height:0.95;letter-spacing:-0.02em;margin-bottom:24px}
+h1 .line1{display:block;color:var(--white);animation:slide-up 0.8s cubic-bezier(.16,1,.3,1) 0.2s both}
+h1 .line2{display:block;color:var(--volt);text-shadow:0 0 60px var(--volt-glow),0 0 120px rgba(127,255,0,0.15);animation:slide-up 0.8s cubic-bezier(.16,1,.3,1) 0.4s both}
+h1 .line3{display:block;color:transparent;-webkit-text-stroke:1px var(--dim);animation:slide-up 0.8s cubic-bezier(.16,1,.3,1) 0.6s both}
+@keyframes slide-up{from{opacity:0;transform:translateY(40px)}to{opacity:1;transform:translateY(0)}}
+.hero-desc{font-family:var(--mono);font-size:13px;line-height:1.8;color:var(--grey);max-width:480px;margin-bottom:48px;letter-spacing:0.02em;animation:slide-up 0.8s cubic-bezier(.16,1,.3,1) 0.7s both}
+.hero-desc em{color:var(--volt);font-style:normal}
+.hero-actions{display:flex;gap:16px;align-items:center;animation:slide-up 0.8s cubic-bezier(.16,1,.3,1) 0.85s both}
+.btn-primary{font-family:var(--mono);font-size:12px;letter-spacing:0.15em;text-transform:uppercase;padding:18px 40px;background:var(--volt);color:var(--void);border:none;cursor:none;font-weight:700;position:relative;overflow:hidden;transition:all 0.2s}
+.btn-primary::after{content:'';position:absolute;inset:0;background:linear-gradient(45deg,transparent 30%,rgba(255,255,255,0.3) 50%,transparent 70%);transform:translateX(-200%);transition:transform 0.4s}
+.btn-primary:hover::after{transform:translateX(200%)}
+.btn-primary:hover{box-shadow:0 0 40px var(--volt-glow),0 0 80px rgba(127,255,0,0.15)}
+.btn-ghost{font-family:var(--mono);font-size:12px;letter-spacing:0.15em;text-transform:uppercase;padding:17px 32px;background:transparent;color:var(--grey);border:1px solid var(--dim);cursor:none;transition:all 0.2s}
+.btn-ghost:hover{color:var(--volt);border-color:var(--volt)}
+
+.hero-right{width:360px;flex-shrink:0;border:1px solid var(--dim);background:rgba(13,18,13,0.8);backdrop-filter:blur(24px);animation:slide-up 0.9s cubic-bezier(.16,1,.3,1) 0.5s both;position:relative;overflow:hidden}
+.hero-right::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--volt),transparent);animation:sweep 3s ease-in-out infinite}
+@keyframes sweep{0%,100%{opacity:0.3}50%{opacity:1}}
+.panel-header{padding:16px 20px;border-bottom:1px solid var(--dim);display:flex;align-items:center;justify-content:space-between}
+.panel-title{font-family:var(--mono);font-size:9px;letter-spacing:0.2em;text-transform:uppercase;color:var(--grey)}
+.panel-status{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:9px;color:var(--volt);letter-spacing:0.1em}
+.status-live{width:5px;height:5px;background:var(--volt);border-radius:50%;animation:pulse-dot 1.5s ease-in-out infinite}
+.sensor-row{padding:16px 20px;border-bottom:1px solid rgba(26,38,26,0.8);display:flex;align-items:center;gap:16px;transition:background 0.2s}
+.sensor-row:hover{background:var(--volt-ghost)}
+.sensor-row:last-of-type{border-bottom:none}
+.sensor-id{font-family:var(--mono);font-size:9px;color:var(--dim);width:56px;letter-spacing:0.08em}
+.sensor-bar-wrap{flex:1;display:flex;flex-direction:column;gap:6px}
+.sensor-label{font-family:var(--mono);font-size:8px;letter-spacing:0.15em;text-transform:uppercase;color:var(--grey)}
+.sensor-bar-track{height:3px;background:var(--rim);position:relative;overflow:hidden}
+.sensor-bar-fill{height:100%;background:var(--volt);transform-origin:left;animation:bar-grow 1.5s cubic-bezier(.16,1,.3,1) forwards}
+@keyframes bar-grow{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+.sensor-val{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--volt);min-width:48px;text-align:right;letter-spacing:-0.02em}
+.panel-footer{padding:16px 20px;border-top:1px solid var(--dim)}
+.panel-timestamp{font-family:var(--mono);font-size:8px;color:var(--dim);letter-spacing:0.1em}
+#live-time{color:var(--grey)}
+
+.ticker-strip{position:relative;z-index:10;border-top:1px solid var(--dim);border-bottom:1px solid var(--dim);padding:12px 0;overflow:hidden;background:var(--obsidian)}
+.ticker-inner{display:flex;gap:0;animation:ticker 30s linear infinite;white-space:nowrap}
+.ticker-item{display:inline-flex;align-items:center;gap:24px;padding:0 48px;font-family:var(--mono);font-size:11px;color:var(--grey);letter-spacing:0.08em;border-right:1px solid var(--dim);flex-shrink:0}
+.ticker-item em{color:var(--volt);font-style:normal;font-weight:700}
+@keyframes ticker{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+
+.features-section{position:relative;z-index:10;padding:120px 48px}
+.section-label{font-family:var(--mono);font-size:9px;letter-spacing:0.3em;text-transform:uppercase;color:var(--volt);margin-bottom:16px;display:flex;align-items:center;gap:12px}
+.section-label::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,var(--volt-dim),transparent);max-width:120px}
+h2{font-family:var(--display);font-size:clamp(32px,4vw,52px);font-weight:700;line-height:1.1;letter-spacing:-0.03em;margin-bottom:16px;color:var(--white)}
+h2 span{color:var(--volt)}
+.features-intro{font-family:var(--mono);font-size:12px;line-height:1.8;color:var(--grey);max-width:480px;margin-bottom:72px}
+.features-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--dim)}
+.feature-card{background:var(--obsidian);padding:40px 32px;position:relative;overflow:hidden;transition:background 0.3s}
+.feature-card:hover{background:var(--panel)}
+.feature-card::before{content:'';position:absolute;top:0;left:0;width:100%;height:2px;background:var(--volt);transform:scaleX(0);transform-origin:left;transition:transform 0.4s cubic-bezier(.16,1,.3,1)}
+.feature-card:hover::before{transform:scaleX(1)}
+.feature-num{font-family:var(--mono);font-size:10px;letter-spacing:0.2em;color:var(--dim);margin-bottom:24px}
+.feature-icon{width:48px;height:48px;border:1px solid var(--dim);display:flex;align-items:center;justify-content:center;margin-bottom:24px;transition:border-color 0.3s;font-size:20px}
+.feature-card:hover .feature-icon{border-color:var(--volt)}
+.feature-title{font-family:var(--display);font-size:18px;font-weight:700;margin-bottom:12px;color:var(--white);letter-spacing:-0.02em}
+.feature-desc{font-family:var(--mono);font-size:11px;line-height:1.8;color:var(--grey)}
+
+.specs-section{position:relative;z-index:10;padding:80px 48px 120px;display:grid;grid-template-columns:1fr 1fr;gap:80px;align-items:center}
+.spec-terminal{background:var(--obsidian);border:1px solid var(--dim);font-family:var(--mono);font-size:11px;position:relative;overflow:hidden}
+.spec-terminal::before{content:'';position:absolute;inset:0;background:repeating-linear-gradient(0deg,var(--volt-ghost) 0px,transparent 1px,transparent 3px);pointer-events:none;z-index:1}
+.terminal-bar{padding:10px 16px;background:var(--rim);border-bottom:1px solid var(--dim);display:flex;align-items:center;gap:8px}
+.term-dot{width:10px;height:10px;border-radius:50%}
+.term-red{background:#ff5f57}.term-yellow{background:#ffbd2e}.term-green{background:var(--volt)}
+.terminal-body{padding:24px;line-height:2;position:relative;z-index:2}
+.t-comment{color:var(--dim)}.t-key{color:#7ec8e3}.t-val{color:var(--volt)}.t-str{color:#ffb86c}
+.t-cursor{display:inline-block;width:8px;height:14px;background:var(--volt);animation:cursor-blink 1s step-end infinite;vertical-align:bottom;margin-left:4px}
+@keyframes cursor-blink{0%,100%{opacity:1}50%{opacity:0}}
+.specs-text h2{margin-bottom:24px}
+.spec-list{list-style:none;display:flex;flex-direction:column;gap:0}
+.spec-item{display:flex;align-items:flex-start;gap:20px;padding:20px 0;border-bottom:1px solid var(--dim);font-family:var(--mono);font-size:12px}
+.spec-item:first-child{border-top:1px solid var(--dim)}
+.spec-num{color:var(--volt);min-width:28px;font-size:10px}
+.spec-body{color:var(--grey);line-height:1.7}
+.spec-body strong{display:block;color:var(--white);font-weight:700;margin-bottom:4px;font-size:13px}
+
+.cta-section{position:relative;z-index:10;padding:80px 48px 160px;text-align:center}
+.cta-inner{border:1px solid var(--dim);padding:80px 64px;position:relative;overflow:hidden;background:var(--obsidian)}
+.cta-inner::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 50% 100%,rgba(127,255,0,0.08) 0%,transparent 60%)}
+.cta-inner::after{content:'';position:absolute;bottom:0;left:50%;transform:translateX(-50%);width:200px;height:1px;background:var(--volt);box-shadow:0 0 40px 10px var(--volt-glow)}
+.cta-kicker{font-family:var(--mono);font-size:10px;letter-spacing:0.25em;text-transform:uppercase;color:var(--volt);margin-bottom:24px}
+.cta-section h2{margin-bottom:16px;position:relative}
+.cta-section p{font-family:var(--mono);font-size:12px;color:var(--grey);margin-bottom:48px;line-height:1.8;position:relative}
+.cta-row{display:flex;gap:16px;justify-content:center;position:relative}
+
+footer{position:relative;z-index:10;padding:32px 48px;border-top:1px solid var(--dim);display:flex;align-items:center;justify-content:space-between}
+.footer-copy{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:0.1em}
+.footer-copy span{color:var(--volt)}
+.footer-links{display:flex;gap:24px}
+.footer-links a{font-family:var(--mono);font-size:10px;color:var(--dim);text-decoration:none;letter-spacing:0.1em;transition:color 0.2s}
+.footer-links a:hover{color:var(--volt)}
+</style>
+</head>
+<body>
+<div id="cursor"></div>
+<div id="cursor-ring"></div>
+<canvas id="field-canvas"></canvas>
+
+<nav>
+  <a href="#" class="nav-logo">
+    <div class="logo-mark">
+      <div class="logo-hex"></div>
+      <div class="logo-dot"></div>
+    </div>
+    <div class="logo-text">SOIL<span>DR</span></div>
+  </a>
+  <ul class="nav-links">
+    <li><a href="#">System</a></li>
+    <li><a href="#">Nodes</a></li>
+    <li><a href="#">Analytics</a></li>
+    <li><a href="#">Docs</a></li>
+  </ul>
+  <button class="nav-cta"><span>Launch Dashboard →</span></button>
+</nav>
+
+<section class="hero">
+  <div class="hero-left">
+    <div class="system-tag">
+      <span class="tag-blink"></span>
+      System Online — 6 Nodes Active
+    </div>
+    <h1>
+      <span class="line1">PRECISION</span>
+      <span class="line2">SOIL</span>
+      <span class="line3">INTELLIGENCE</span>
+    </h1>
+    <p class="hero-desc">
+      Real-time IoT telemetry for precision agriculture.
+      <em>N·P·K, moisture, pH</em> — streamed live from
+      every node in the field. Built by an engineer.
+      Built to scale.
+    </p>
+    <div class="hero-actions">
+      <button class="btn-primary">Enter Dashboard</button>
+      <button class="btn-ghost">View Field Map</button>
+    </div>
+  </div>
+
+  <div class="hero-right">
+    <div class="panel-header">
+      <span class="panel-title">// live_telemetry.stream</span>
+      <span class="panel-status"><span class="status-live"></span>BROADCASTING</span>
+    </div>
+    <div class="sensor-row">
+      <span class="sensor-id">NODE_06</span>
+      <div class="sensor-bar-wrap">
+        <span class="sensor-label">Soil Moisture</span>
+        <div class="sensor-bar-track"><div class="sensor-bar-fill" style="width:31.5%;animation-delay:0.1s"></div></div>
+      </div>
+      <span class="sensor-val">31.5%</span>
+    </div>
+    <div class="sensor-row">
+      <span class="sensor-id">NODE_04</span>
+      <div class="sensor-bar-wrap">
+        <span class="sensor-label">Nitrogen (N)</span>
+        <div class="sensor-bar-track"><div class="sensor-bar-fill" style="width:38.5%;animation-delay:0.2s"></div></div>
+      </div>
+      <span class="sensor-val">23.1<small style="font-size:8px">ppm</small></span>
+    </div>
+    <div class="sensor-row">
+      <span class="sensor-id">NODE_02</span>
+      <div class="sensor-bar-wrap">
+        <span class="sensor-label">Potassium (K)</span>
+        <div class="sensor-bar-track"><div class="sensor-bar-fill" style="width:83.2%;animation-delay:0.3s"></div></div>
+      </div>
+      <span class="sensor-val">249.6<small style="font-size:8px">ppm</small></span>
+    </div>
+    <div class="sensor-row">
+      <span class="sensor-id">NODE_05</span>
+      <div class="sensor-bar-wrap">
+        <span class="sensor-label">Temperature</span>
+        <div class="sensor-bar-track"><div class="sensor-bar-fill" style="width:56.9%;animation-delay:0.4s"></div></div>
+      </div>
+      <span class="sensor-val">25.6°C</span>
+    </div>
+    <div class="sensor-row">
+      <span class="sensor-id">NODE_01</span>
+      <div class="sensor-bar-wrap">
+        <span class="sensor-label">Soil pH</span>
+        <div class="sensor-bar-track"><div class="sensor-bar-fill" style="width:69%;animation-delay:0.5s"></div></div>
+      </div>
+      <span class="sensor-val">6.9 pH</span>
+    </div>
+    <div class="panel-footer">
+      <span class="panel-timestamp">LAST_SYNC: <span id="live-time">--:--:--</span> UTC · EDGE_PLOT_01</span>
+    </div>
+  </div>
+</section>
+
+<div class="ticker-strip">
+  <div class="ticker-inner">
+    <span class="ticker-item">AVG_MOISTURE <em>25.2%</em></span>
+    <span class="ticker-item">AVG_pH <em>6.65</em></span>
+    <span class="ticker-item">AVG_TEMP <em>24.8°C</em></span>
+    <span class="ticker-item">NODE_STATUS <em>6/6 ONLINE</em></span>
+    <span class="ticker-item">K_PEAK <em>249.6 PPM</em></span>
+    <span class="ticker-item">N_AVG <em>31.2 PPM</em></span>
+    <span class="ticker-item">P_AVG <em>48.6 PPM</em></span>
+    <span class="ticker-item">AI_DIAGNOSES <em>12 TODAY</em></span>
+    <span class="ticker-item">AVG_MOISTURE <em>25.2%</em></span>
+    <span class="ticker-item">AVG_pH <em>6.65</em></span>
+    <span class="ticker-item">AVG_TEMP <em>24.8°C</em></span>
+    <span class="ticker-item">NODE_STATUS <em>6/6 ONLINE</em></span>
+    <span class="ticker-item">K_PEAK <em>249.6 PPM</em></span>
+    <span class="ticker-item">N_AVG <em>31.2 PPM</em></span>
+    <span class="ticker-item">P_AVG <em>48.6 PPM</em></span>
+    <span class="ticker-item">AI_DIAGNOSES <em>12 TODAY</em></span>
+  </div>
+</div>
+
+<section class="features-section">
+  <div class="section-label">// core_modules</div>
+  <h2>Every layer of the<br><span>soil stack.</span> Covered.</h2>
+  <p class="features-intro">From raw sensor telemetry to AI-generated prescriptions — the full intelligence pipeline running on your edge hardware, in your field.</p>
+  <div class="features-grid">
+    <div class="feature-card"><div class="feature-num">01 —</div><div class="feature-icon">⬡</div><div class="feature-title">Node Telemetry</div><div class="feature-desc">Live N·P·K, moisture, humidity, temperature and pH streaming from every field node via MQTT over LoRaWAN. Sub-60s latency.</div></div>
+    <div class="feature-card"><div class="feature-num">02 —</div><div class="feature-icon">◈</div><div class="feature-title">Geospatial Grid</div><div class="feature-desc">Leaflet-powered field map with real-time node markers. Click any coordinate to inspect live sensor state and historical drift.</div></div>
+    <div class="feature-card"><div class="feature-num">03 —</div><div class="feature-icon">◬</div><div class="feature-title">AI Soil Doctor</div><div class="feature-desc">LLM-powered agronomic engine. Feed it your telemetry, get prescriptive recommendations on irrigation, fertiliser and crop selection.</div></div>
+    <div class="feature-card"><div class="feature-num">04 —</div><div class="feature-icon">▣</div><div class="feature-title">Edge Processing</div><div class="feature-desc">FastAPI backend with Supabase real-time. All compute runs close to the sensor array. No cloud dependency for core monitoring.</div></div>
+    <div class="feature-card"><div class="feature-num">05 —</div><div class="feature-icon">◉</div><div class="feature-title">Alert Engine</div><div class="feature-desc">Threshold-based anomaly detection with instant UI alerts. Configure per-node thresholds for any parameter. No missed events.</div></div>
+    <div class="feature-card"><div class="feature-num">06 —</div><div class="feature-icon">⬢</div><div class="feature-title">Data Vault</div><div class="feature-desc">Full historical telemetry log with date-range filtering and CSV export. Every reading. Every node. Timestamped to the millisecond.</div></div>
+  </div>
+</section>
+
+<section class="specs-section">
+  <div class="spec-terminal">
+    <div class="terminal-bar">
+      <span class="term-dot term-red"></span><span class="term-dot term-yellow"></span><span class="term-dot term-green"></span>
+    </div>
+    <div class="terminal-body">
+      <div><span class="t-comment">// node_06 · live payload</span></div>
+      <div><span class="t-key">timestamp</span>: <span class="t-str">"2026-05-18T01:11:47Z"</span></div>
+      <div><span class="t-key">node_id</span>: <span class="t-val">"NODE_06"</span></div>
+      <div><span class="t-key">nitrogen_ppm</span>: <span class="t-val">27.3</span></div>
+      <div><span class="t-key">phosphorus_ppm</span>: <span class="t-val">43.0</span></div>
+      <div><span class="t-key">potassium_ppm</span>: <span class="t-val">198.4</span></div>
+      <div><span class="t-key">soil_moisture</span>: <span class="t-val">18.9</span></div>
+      <div><span class="t-key">humidity_pct</span>: <span class="t-val">60.0</span></div>
+      <div><span class="t-key">temperature_c</span>: <span class="t-val">24.5</span></div>
+      <div><span class="t-key">ph</span>: <span class="t-val">7.0</span></div>
+      <div><span class="t-key">battery_v</span>: <span class="t-val">4.12</span></div>
+      <div><span class="t-key">status</span>: <span class="t-str">"ONLINE"</span></div>
+      <div><span class="t-key">ai_status</span>: <span class="t-str">"POOR"</span><span class="t-cursor"></span></div>
+    </div>
+  </div>
+  <div class="specs-text">
+    <div class="section-label">// system_specs</div>
+    <h2>Raw data.<br><span>Real decisions.</span></h2>
+    <ul class="spec-list">
+      <li class="spec-item"><span class="spec-num">→</span><span class="spec-body"><strong>Supabase Realtime</strong>Sub-second data propagation from node to dashboard UI via Postgres Change Data Capture.</span></li>
+      <li class="spec-item"><span class="spec-num">→</span><span class="spec-body"><strong>FastAPI Backend</strong>Async Python API handling ingestion, LLM orchestration, and alert triggers at the edge.</span></li>
+      <li class="spec-item"><span class="spec-num">→</span><span class="spec-body"><strong>LLM Inference</strong>Claude-powered diagnostic engine with full telemetry context injected per inference call.</span></li>
+      <li class="spec-item"><span class="spec-num">→</span><span class="spec-body"><strong>React + Tailwind</strong>Component-based dashboard with Framer Motion animations and responsive node grid.</span></li>
+    </ul>
+  </div>
+</section>
+
+<section class="cta-section">
+  <div class="cta-inner">
+    <div class="cta-kicker">// ready_to_deploy</div>
+    <h2>The field is<br><span>waiting.</span></h2>
+    <p>Six nodes. Continuous telemetry. AI-powered diagnosis.<br>This is precision agriculture — engineered from the ground up.</p>
+    <div class="cta-row">
+      <button class="btn-primary">Open Dashboard</button>
+      <button class="btn-ghost">Read the Docs</button>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="footer-copy">© 2026 <span>SOIL DOCTOR</span> · EDGE PLOT SYSTEM v1.0</div>
+  <div class="footer-links">
+    <a href="#">GitHub</a>
+    <a href="#">API Docs</a>
+    <a href="#">System Status</a>
+  </div>
+</footer>
+
+<script>
+const cursor=document.getElementById('cursor');
+const ring=document.getElementById('cursor-ring');
+let mx=0,my=0,rx=0,ry=0;
+document.addEventListener('mousemove',e=>{
+  mx=e.clientX;my=e.clientY;
+  cursor.style.transform=`translate(${mx-6}px,${my-6}px)`;
+});
+function animRing(){
+  rx+=(mx-rx)*0.12;ry+=(my-ry)*0.12;
+  ring.style.transform=`translate(${rx-18}px,${ry-18}px)`;
+  requestAnimationFrame(animRing);
+}animRing();
+
+const canvas=document.getElementById('field-canvas');
+const ctx=canvas.getContext('2d');
+let W,H,particles=[];
+function resize(){W=canvas.width=window.innerWidth;H=canvas.height=window.innerHeight;}
+resize();window.addEventListener('resize',resize);
+
+class Particle{
+  constructor(){this.reset()}
+  reset(){
+    this.x=Math.random()*W;this.y=Math.random()*H;
+    this.vx=(Math.random()-0.5)*0.3;this.vy=(Math.random()-0.5)*0.3;
+    this.r=Math.random()*1.5+0.3;this.alpha=Math.random()*0.5+0.1;
+    this.isNode=Math.random()<0.03;
+    if(this.isNode){this.r=3;this.alpha=0.9;this.pulse=0}
+  }
+  update(){
+    this.x+=this.vx;this.y+=this.vy;
+    if(this.x<0||this.x>W||this.y<0||this.y>H)this.reset();
+    if(this.isNode)this.pulse=(this.pulse+0.04)%(Math.PI*2);
+  }
+  draw(){
+    if(this.isNode){
+      const glow=Math.sin(this.pulse)*0.4+0.6;
+      ctx.beginPath();ctx.arc(this.x,this.y,this.r,0,Math.PI*2);
+      ctx.fillStyle=`rgba(127,255,0,${this.alpha*glow})`;ctx.fill();
+      ctx.beginPath();ctx.arc(this.x,this.y,this.r+(Math.sin(this.pulse)*4+4),0,Math.PI*2);
+      ctx.strokeStyle=`rgba(127,255,0,${0.15*glow})`;ctx.lineWidth=1;ctx.stroke();
+    }else{
+      ctx.beginPath();ctx.arc(this.x,this.y,this.r,0,Math.PI*2);
+      ctx.fillStyle=`rgba(74,140,74,${this.alpha})`;ctx.fill();
+    }
+  }
+}
+for(let i=0;i<180;i++)particles.push(new Particle());
+
+function drawConnections(){
+  for(let i=0;i<particles.length;i++){
+    if(!particles[i].isNode)continue;
+    for(let j=i+1;j<particles.length;j++){
+      if(!particles[j].isNode)continue;
+      const dx=particles[i].x-particles[j].x,dy=particles[i].y-particles[j].y;
+      const d=Math.sqrt(dx*dx+dy*dy);
+      if(d<220){
+        ctx.beginPath();ctx.moveTo(particles[i].x,particles[i].y);ctx.lineTo(particles[j].x,particles[j].y);
+        ctx.strokeStyle=`rgba(127,255,0,${0.12*(1-d/220)})`;ctx.lineWidth=0.5;ctx.stroke();
+      }
+    }
+  }
+}
+
+let scanY=0;
+function loop(){
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle='rgba(127,255,0,0.012)';ctx.fillRect(0,scanY,W,80);
+  ctx.fillStyle='rgba(127,255,0,0.03)';ctx.fillRect(0,scanY,W,2);
+  scanY=(scanY+1.2)%H;
+  drawConnections();
+  particles.forEach(p=>{p.update();p.draw()});
+  requestAnimationFrame(loop);
+}loop();
+
+function updateTime(){
+  const now=new Date();
+  const el=document.getElementById('live-time');
+  if(el)el.textContent=now.toISOString().slice(11,19);
+  setTimeout(updateTime,1000);
+}updateTime();
+
+const baseVals=[31.5,23.1,249.6,25.6,6.9];
+const valEls=document.querySelectorAll('.sensor-val');
+setInterval(()=>{
+  valEls.forEach((el,i)=>{
+    const drift=(Math.random()-0.5)*0.4;
+    const newVal=(baseVals[i]+drift).toFixed(1);
+    el.style.transition='opacity 0.3s';el.style.opacity='0.4';
+    setTimeout(()=>{
+      if(i===0)el.textContent=newVal+'%';
+      else if(i===1)el.innerHTML=newVal+'<small style="font-size:8px">ppm</small>';
+      else if(i===2)el.innerHTML=newVal+'<small style="font-size:8px">ppm</small>';
+      else if(i===3)el.textContent=newVal+'°C';
+      else el.textContent=newVal+' pH';
+      el.style.opacity='1';
+    },300);
+  });
+},3000);
+</script>
+</body>
+</html>

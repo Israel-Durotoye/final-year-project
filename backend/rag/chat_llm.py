@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from openai import OpenAI
+from supabase import create_client, Client
 
 if TYPE_CHECKING:
     from backend.rag.rag_engine import RetrievedChunk
@@ -89,20 +90,35 @@ def generate_rag_response(
     # Tool Registration
     # ------------------------------------------------------------------ #
     def get_live_sensor_data(node_id: str) -> dict:
-        ts = datetime.now(timezone.utc).isoformat()
-        node = (node_id or "UNKNOWN").upper()
-        return {
-            "node_id": node,
-            "timestamp_utc": ts,
-            "soil_moisture": 21.5,
-            "soil_temperature_c": 26.8,
-            "ph": 6.1,
-            "nitrogen_ppm": 14.2,
-            "phosphorus_ppm": 9.4,
-            "potassium_ppm": 41.7,
-            "battery_voltage": 3.72,
-            "communication_ok": True,
-        }
+        # Read Supabase credentials from environment
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = os.environ.get("SUPABASE_KEY")
+
+        if not supabase_url or not supabase_key:
+            return {"error": "Supabase credentials not configured. Set SUPABASE_URL and SUPABASE_KEY."}
+
+        client: Client = create_client(supabase_url, supabase_key)
+
+        # Query the most recent telemetry row for the given node_id
+        try:
+            result = (
+                client
+                .table("sensor_telemetry")
+                .select("*")
+                .eq("node_id", node_id)
+                .order("timestamp_utc", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Supabase query failed: {exc}") from exc
+
+        # Support both result.data attribute and dict-like response
+        data = getattr(result, "data", None) or (result.get("data") if isinstance(result, dict) else None)
+
+        if data and len(data) > 0:
+            return data[0]
+        return {"error": f"No live telemetry found for {node_id}. Ensure the node is online."}
 
     tools = [{
         "type": "function",
@@ -176,6 +192,7 @@ def generate_rag_response(
             model=model_name,
             messages=messages,
             tools=tools,
+            tool_choice="none",
             temperature=temperature,
             max_tokens=max_output_tokens,
             top_p=DEFAULT_TOP_P,
