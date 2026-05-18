@@ -83,12 +83,12 @@ _CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 COLLECTION_NAME  = "agronomic_knowledge"
 EMBED_MODEL_NAME = "sentence-transformers/multi-qa-mpnet-base-dot-v1"
-RERANK_MODEL_NAME = "BAAI/bge-reranker-large"
+RERANK_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 # Candidate pool multipliers before reranking
-# e.g. top_k=5 → dense fetches 20, sparse fetches 20, reranker scores ≤25 merged
-DENSE_MULT  = 4
-SPARSE_MULT = 4
+# e.g. top_k=5 → dense fetches 10, sparse fetches 10, reranker scores ≤20 merged
+DENSE_MULT  = 2
+SPARSE_MULT = 2
 
 # RRF constant — 60 is the standard value from the original paper
 RRF_K = 60

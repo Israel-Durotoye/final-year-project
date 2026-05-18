@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { useTheme } from '@/components/theme-provider';
 
 class Particle {
   x: number = 0;
@@ -46,22 +47,25 @@ class Particle {
     }
   }
 
-  draw(ctx: CanvasRenderingContext2D) {
+  draw(ctx: CanvasRenderingContext2D, isLight: boolean) {
+    const baseColor = isLight ? '38, 176, 119' : '74, 222, 128';
+    const dimColor = isLight ? '38, 176, 119' : '52, 211, 153';
+    
     if (this.isNode) {
       const glow = Math.sin(this.pulse) * 0.4 + 0.6;
       ctx.beginPath();
       ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(74, 222, 128, ${this.alpha * glow})`; // using green-400 equivalent
+      ctx.fillStyle = `rgba(${baseColor}, ${this.alpha * glow * (isLight ? 0.7 : 1)})`; 
       ctx.fill();
       ctx.beginPath();
       ctx.arc(this.x, this.y, this.r + (Math.sin(this.pulse) * 4 + 4), 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(74, 222, 128, ${0.15 * glow})`;
+      ctx.strokeStyle = `rgba(${baseColor}, ${0.15 * glow * (isLight ? 0.8 : 1)})`;
       ctx.lineWidth = 1;
       ctx.stroke();
     } else {
       ctx.beginPath();
       ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(52, 211, 153, ${this.alpha * 0.5})`; // emerald-400 slightly dim
+      ctx.fillStyle = `rgba(${dimColor}, ${this.alpha * (isLight ? 0.6 : 0.5)})`; 
       ctx.fill();
     }
   }
@@ -69,12 +73,16 @@ class Particle {
 
 export const LiveBackground = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const { theme } = useTheme();
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+
+    // Check system preference if theme is 'system'
+    const isLight = theme === 'light' || (theme === 'system' && !window.matchMedia('(prefers-color-scheme: dark)').matches);
 
     let animationFrameId: number;
     let particles: Particle[] = [];
@@ -95,6 +103,7 @@ export const LiveBackground = () => {
     resize();
 
     const drawConnections = () => {
+      const baseColor = isLight ? '38, 176, 119' : '74, 222, 128';
       for (let i = 0; i < particles.length; i++) {
         if (!particles[i].isNode) continue;
         for (let j = i + 1; j < particles.length; j++) {
@@ -106,7 +115,7 @@ export const LiveBackground = () => {
             ctx.beginPath();
             ctx.moveTo(particles[i].x, particles[i].y);
             ctx.lineTo(particles[j].x, particles[j].y);
-            ctx.strokeStyle = `rgba(74, 222, 128, ${0.12 * (1 - d / 250)})`;
+            ctx.strokeStyle = `rgba(${baseColor}, ${0.12 * (1 - d / 250) * (isLight ? 0.8 : 1)})`;
             ctx.lineWidth = 0.8;
             ctx.stroke();
           }
@@ -117,17 +126,19 @@ export const LiveBackground = () => {
     const loop = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       
+      const baseColor = isLight ? '38, 176, 119' : '74, 222, 128';
+      
       // Subtle scanline effect sweeping down
-      ctx.fillStyle = 'rgba(74, 222, 128, 0.012)';
+      ctx.fillStyle = `rgba(${baseColor}, ${isLight ? 0.008 : 0.012})`;
       ctx.fillRect(0, scanY, canvas.width, 80);
-      ctx.fillStyle = 'rgba(74, 222, 128, 0.03)';
+      ctx.fillStyle = `rgba(${baseColor}, ${isLight ? 0.02 : 0.03})`;
       ctx.fillRect(0, scanY, canvas.width, 2);
       scanY = (scanY + 1.2) % canvas.height;
 
       drawConnections();
       particles.forEach((p) => {
         p.update(canvas.width, canvas.height);
-        p.draw(ctx);
+        p.draw(ctx, isLight);
       });
 
       animationFrameId = window.requestAnimationFrame(loop);
@@ -139,12 +150,14 @@ export const LiveBackground = () => {
       window.removeEventListener('resize', resize);
       window.cancelAnimationFrame(animationFrameId);
     };
-  }, []);
+  }, [theme]);
+
+  const isLight = theme === 'light' || (theme === 'system' && !window.matchMedia('(prefers-color-scheme: dark)').matches);
 
   return (
     <canvas
       ref={canvasRef}
-      className="fixed inset-0 z-0 pointer-events-none opacity-60 mix-blend-screen"
+      className={`fixed inset-0 z-0 pointer-events-none opacity-60 ${isLight ? 'mix-blend-multiply' : 'mix-blend-screen'}`}
     />
   );
 };

@@ -110,7 +110,7 @@ const AiDoctor = () => {
   }, [location]);
 
   return (
-    <>
+    <div className="flex flex-col h-[calc(100vh-8.5rem)]">
       <PageHeader title="AI Soil Doctor" subtitle="Your intelligent farming companion" />
       <div className="flex-1 flex flex-col max-w-4xl w-full mx-auto px-4 sm:px-6 py-4 min-h-0">
         <div className="flex-1 overflow-y-auto space-y-5 py-4">
@@ -142,7 +142,7 @@ const AiDoctor = () => {
               </div>
               {m.role === "user" && (
                 <div className="h-9 w-9 rounded-full bg-primary/20 border border-primary/50 flex items-center justify-center shrink-0 text-xs font-semibold text-primary">
-                  AK
+                  ID
                 </div>
               )}
             </div>
@@ -196,7 +196,7 @@ const AiDoctor = () => {
           AI guidance is advisory. Always verify with agronomic best practices.
         </p>
       </div>
-    </>
+    </div>
   );
 };
 

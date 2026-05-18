@@ -192,7 +192,13 @@ const Nodes = () => {
                 </div>
 
                 {/* CTA */}
-                <Button onClick={() => navigate('/ai-doctor', { state: { autoQuery: `Run a full diagnostic on ${n.node_id} using its latest telemetry.` } })} className="w-full mt-auto gradient-primary text-primary-foreground hover:opacity-95 shadow-glow h-11 text-sm tracking-wide">
+                <Button 
+                  onClick={() => {
+                    const query = `Run a full diagnostic on ${n.node_id} using its latest telemetry: Nitrogen: ${n.nitrogen_ppm ?? n.nitrogen ?? "-"}ppm, Phosphorus: ${n.phosphorus_ppm ?? n.phosphorus ?? "-"}ppm, Potassium: ${n.potassium_ppm ?? n.potassium ?? "-"}ppm, Moisture: ${n.soil_moisture ?? n.moisture ?? "-"}%, Humidity: ${n.humidity ?? "-"}%, Temperature: ${n.soil_temperature_c ?? n.temperature ?? "-"}°C.`;
+                    navigate('/ai-doctor', { state: { autoQuery: query } });
+                  }} 
+                  className="w-full mt-auto gradient-primary text-primary-foreground hover:opacity-95 shadow-glow h-11 text-sm tracking-wide"
+                >
                   <Stethoscope className="h-4 w-4 mr-2" />
                   Diagnose Node
                 </Button>

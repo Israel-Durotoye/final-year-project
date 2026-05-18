@@ -155,7 +155,17 @@ def generate_rag_response(
             top_p=DEFAULT_TOP_P,
         )
     except Exception as exc:
-        raise RuntimeError(f"Groq API call failed: {exc}") from exc
+        if "400" in str(exc) or "tool_use_failed" in str(exc):
+            logger.warning("Groq tool parsing failed (likely hallucinated tool arguments). Retrying without tools. Error: %s", exc)
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_output_tokens,
+                top_p=DEFAULT_TOP_P,
+            )
+        else:
+            raise RuntimeError(f"Groq API call failed: {exc}") from exc
 
     elapsed = time.perf_counter() - t_start
     message = response.choices[0].message
@@ -246,26 +256,26 @@ def _build_system_instruction() -> str:
 GROUNDING RULES — NON-NEGOTIABLE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-RULE 1 — CONTEXT FIDELITY:
-You MUST base your answer EXCLUSIVELY on the KNOWLEDGE BASE CONTEXT provided in the user message. Do not use any information from your pre-training that is not present in or directly implied by the provided context chunks.
+RULE 1 — CONTEXT AND TELEMETRY FIDELITY:
+You must base your answer on the KNOWLEDGE BASE CONTEXT provided below, AND on any live telemetry data provided directly in the user's question. Use the knowledge base to guide your agronomic recommendations based on the telemetry data.
 
-RULE 2 — HONEST GAPS:
-If the provided context does not contain enough information to answer the question accurately, you MUST respond with a clear statement such as: "The documents in my current knowledge base do not contain specific information about [topic]." NEVER fabricate facts or speculate.
+RULE 2 — HONEST GAPS AND EXPERT DIAGNOSIS:
+If the user asks a general question and no relevant context is provided, you must acknowledge the gap (e.g., "The documents in my knowledge base do not contain specific information about [topic]."). However, if the user provides specific sensor telemetry data (e.g., Nitrogen, Phosphorus, Moisture values), you MUST act as an expert agronomist, analyze the data, and provide specific recommendations based on general agronomic principles, even if that specific node or exact scenario is not covered in the knowledge base.
 
 RULE 3 — NO CITATIONS:
 Do NOT include source names, filenames, or citations anywhere in your response.
 
 RULE 4 — PRODUCT DISCIPLINE:
-Only mention specific fertiliser products, chemical compounds, or brand names that appear explicitly in the context chunks.
+Only mention specific fertiliser products, chemical compounds, or brand names that appear explicitly in the context chunks, unless you are making a general agronomic recommendation based on telemetry data.
 
-RULE 5 — TONE:
-Provide only direct, concise answers. Do not include lengthy explanations, filler words, or unnecessary background information. Get straight to the point."""
+RULE 5 — TONE AND PRESCRIPTIVE FOCUS:
+Provide direct, highly concise, and action-oriented answers. You are a PRESCRIPTIVE MAINTENANCE SYSTEM. Do not output conversational filler (e.g., "Since we don't have any live sensor data...", "Here is your diagnostic report..."). Do not just regurgitate the telemetry values back to the user. Instead, tell the user exactly WHAT needs to be done and WHY, focusing immediately on the most critical deviations (e.g., "Apply nitrogen fertilizer immediately because N levels are critically low at 22ppm"). Use concise bullet points for actionable tasks."""
 
 def _build_user_content(query: str, context_block: str, has_context: bool) -> str:
     if not has_context:
-        context_note = "⚠️ NOTE: The retrieval system returned no context chunks. Apply RULE 2 and acknowledge the knowledge gap."
+        context_note = "⚠️ NOTE: The retrieval system returned no knowledge base chunks. However, if the user provided telemetry data in their question, you MUST analyze it using your expert agronomic knowledge and provide a diagnosis."
     else:
-        context_note = "The following context chunks have been retrieved from the agronomic knowledge base. Use ONLY this information to answer the question."
+        context_note = "The following context chunks have been retrieved from the agronomic knowledge base. Use this information to answer the question, especially if it relates to diagnosing telemetry."
 
     return f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 KNOWLEDGE BASE CONTEXT

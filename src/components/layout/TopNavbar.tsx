@@ -1,7 +1,8 @@
+import { useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, Radio, PlusCircle, Map, Table2, AlertTriangle,
-  Bot, Settings, Sprout, LogOut, Sun, Moon
+  Bot, Settings, Sprout, LogOut, Sun, Moon, Menu, X
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/components/theme-provider";
@@ -19,6 +20,7 @@ const navItems = [
 export const TopNavbar = () => {
   const { pathname } = useLocation();
   const { theme, setTheme } = useTheme();
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   return (
     <header className="absolute top-0 left-0 right-0 z-40 w-full bg-transparent">
@@ -55,16 +57,62 @@ export const TopNavbar = () => {
         </nav>
 
         {/* Right side controls */}
-        <div className="hidden md:flex items-center justify-end w-32 z-50">
+        <div className="flex items-center justify-end md:w-32 z-50 gap-2">
           <button
             onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            className="flex items-center justify-center h-10 w-10 rounded-full border border-border bg-background/40 backdrop-blur-md text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-all shadow-sm"
+            className="hidden md:flex items-center justify-center h-10 w-10 rounded-full border border-border bg-background/40 backdrop-blur-md text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-all shadow-sm"
             title="Toggle theme"
           >
             {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </button>
+
+          {/* Mobile menu toggle */}
+          <button
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            className="md:hidden flex items-center justify-center h-10 w-10 rounded-full border border-border bg-background/40 backdrop-blur-md text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-all shadow-sm"
+          >
+            {mobileMenuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
         </div>
       </div>
+
+      {/* Mobile Menu Overlay */}
+      {mobileMenuOpen && (
+        <div className="md:hidden absolute top-20 left-0 right-0 bg-background/95 backdrop-blur-xl border-b border-border shadow-lg flex flex-col p-4 space-y-2 z-40 animate-in slide-in-from-top-2">
+          {navItems.map((item) => {
+            const active = pathname === item.to;
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                onClick={() => setMobileMenuOpen(false)}
+                className={cn(
+                  "flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-mono tracking-widest uppercase transition-all duration-300",
+                  active
+                    ? "bg-primary text-primary-foreground shadow-glow"
+                    : "text-foreground hover:bg-black/5 dark:hover:bg-white/5"
+                )}
+              >
+                <item.icon className="h-5 w-5" />
+                <span>{item.label}</span>
+              </NavLink>
+            );
+          })}
+          
+          <div className="h-px w-full bg-border my-2" />
+          
+          <button
+            onClick={() => {
+              setTheme(theme === "dark" ? "light" : "dark");
+              setMobileMenuOpen(false);
+            }}
+            className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-mono tracking-widest uppercase text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-all w-full text-left"
+          >
+            {theme === "dark" ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+            <span>{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>
+          </button>
+        </div>
+      )}
     </header>
   );
 };
