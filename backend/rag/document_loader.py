@@ -79,6 +79,20 @@ from chromadb.config import Settings
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+
+def _resolve_model_device() -> str:
+    """Use GPU if available; allow RAG_MODEL_DEVICE override."""
+    requested = os.environ.get("RAG_MODEL_DEVICE", "").strip().lower()
+    if requested in {"cpu", "cuda", "cuda:0", "cuda:1"}:
+        return requested
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
 if TYPE_CHECKING:
     # Import only for type hints — avoids loading heavy models at module import
     from backend.rag.rag_engine import RAGEngine
@@ -844,11 +858,15 @@ class DocumentLoader:
         """Load SentenceTransformer on first call. No-op on subsequent calls."""
         if self._embedding_model is not None:
             return
-        logger.info("Loading embedding model: %s", self._embed_model_name)
+        model_device = _resolve_model_device()
+        logger.info("Loading embedding model: %s on %s", self._embed_model_name, model_device)
         try:
             from sentence_transformers import SentenceTransformer
-            self._embedding_model = SentenceTransformer(self._embed_model_name)
-            logger.info("Embedding model loaded.")
+            self._embedding_model = SentenceTransformer(
+                self._embed_model_name,
+                device=model_device,
+            )
+            logger.info("Embedding model loaded on %s.", model_device)
         except ImportError as exc:
             raise ImportError(
                 "sentence-transformers is not installed. "
@@ -873,12 +891,12 @@ class DocumentLoader:
         try:
             from paddleocr import PaddleOCR
             # lang='en' for agronomic English documents
-            # use_gpu=False forces CPU mode (safe default for servers without CUDA)
-            # show_log=False suppresses PaddlePaddle's verbose model download logs
+            # use_gpu=True if a CUDA-capable GPU is available
+            use_gpu = _resolve_model_device() != "cpu"
             self._ocr_engine = PaddleOCR(
                 use_angle_cls = True,
                 lang = "en",
-                use_gpu = False,
+                use_gpu = use_gpu,
                 show_log = False,
             )
             logger.info("PaddleOCR initialised.")

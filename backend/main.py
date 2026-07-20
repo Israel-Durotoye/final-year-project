@@ -24,6 +24,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.routes import chat as chat_router
+from backend.api.routes import ml as ml_router
 from backend.rag.rag_engine import RAGEngine
 
 # ---------------------------------------------------------------------------
@@ -89,6 +90,7 @@ app.add_middleware(
 
 # ── Routers ─────────────────────────────────────────────────────────────────
 app.include_router(chat_router.router, prefix="/api/v1")
+app.include_router(ml_router.router, prefix="/api/v1")
 # Future routers (add here when built):
 # app.include_router(prescriptive_router.router, prefix="/api/v1")
 

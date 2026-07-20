@@ -20,10 +20,10 @@ Retrieval Architecture — True Hybrid Search:
     │                         └──► top (top_k × SPARSE_MULT)     │
     │                              candidates + scores           │
     │                                                            │
-    │  [Fusion]  Reciprocal Rank Fusion (RRF, k=60)             │
+    │  [Fusion]  Reciprocal Rank Fusion (RRF, k=60)              │
     │      └──► merged + deduplicated candidate pool             │
     │                                                            │
-    │  [Rerank]  BAAI/bge-reranker-large (FlagEmbedding)        │
+    │  [Rerank]  BAAI/bge-reranker-large (FlagEmbedding)         │
     │      └──► final top_k chunks, sorted by cross-encoder      │
     │           relevance score                                  │
     └────────────────────────────────────────────────────────────┘
@@ -55,6 +55,7 @@ Dependencies:
 from __future__ import annotations
 
 import logging
+import os
 import pickle
 import re
 import time
@@ -95,6 +96,24 @@ RRF_K = 60
 
 # Final chunks returned to the LLM after reranking
 FINAL_TOP_N = 3
+
+
+# ---------------------------------------------------------------------------
+# Device helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_model_device() -> str:
+    """Use GPU if available; allow RAG_MODEL_DEVICE override."""
+    requested = os.environ.get("RAG_MODEL_DEVICE", "").strip().lower()
+    if requested in {"cpu", "cuda", "cuda:0", "cuda:1"}:
+        return requested
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
 
 
 # ---------------------------------------------------------------------------
@@ -179,10 +198,11 @@ class RAGEngine:
         logger.info("Initializing RAGEngine...")
 
         # ── Step 1: Embedding model ────────────────────────────────────
-        logger.info("Loading embedding model: %s", EMBED_MODEL_NAME)
+        model_device = _resolve_model_device()
+        logger.info("Loading embedding model: %s on %s", EMBED_MODEL_NAME, model_device)
         try:
             from sentence_transformers import SentenceTransformer
-            self._embedding_model = SentenceTransformer(EMBED_MODEL_NAME)
+            self._embedding_model = SentenceTransformer(EMBED_MODEL_NAME, device=model_device)
         except ImportError as exc:
             raise ImportError(
                 "sentence-transformers is not installed. "
@@ -190,16 +210,15 @@ class RAGEngine:
             ) from exc
 
         # ── Step 2: Cross-encoder reranker ─────────────────────────────
-        logger.info("Loading reranker: %s", RERANK_MODEL_NAME)
+        logger.info("Loading reranker: %s on %s", RERANK_MODEL_NAME, model_device)
         try:
-            from FlagEmbedding import FlagReranker
-            # use_fp16=True halves memory usage with negligible accuracy impact
-            self._reranker = FlagReranker(RERANK_MODEL_NAME, use_fp16=True)
-        except ImportError as exc:
-            raise ImportError(
-                "FlagEmbedding is not installed. "
-                "Run: pip install FlagEmbedding"
-            ) from exc
+            from sentence_transformers import CrossEncoder
+            self._reranker = CrossEncoder(
+                RERANK_MODEL_NAME,
+                device=model_device,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load reranker {RERANK_MODEL_NAME}: {exc}") from exc
 
         # ── Step 3: ChromaDB persistent client ────────────────────────
         logger.info("Connecting to ChromaDB at: %s", _CHROMA_DIR)
@@ -303,7 +322,8 @@ class RAGEngine:
         Returns:
             List of RetrievedChunk, sorted by rerank_score descending.
             Returns an empty list if the collection is empty or if no relevant
-            chunks survive the relevance threshold.
+            chunks survive the relevance threshold. The LLM will receive a safe
+            fallback message indicating no context was found.
 
         Raises:
             RuntimeError : If called before initialize().
@@ -328,10 +348,27 @@ class RAGEngine:
         n_sparse = min(top_k * SPARSE_MULT, doc_count)
 
         # ── Leg 1: Dense retrieval (ChromaDB cosine similarity) ────────
-        dense_results = self._dense_search(query, n_candidates=n_dense)
+        try:
+            dense_results = self._dense_search(query, n_candidates=n_dense)
+        except Exception as exc:
+            logger.error("Dense retrieval failed: %s. Continuing with sparse-only fallback.", exc)
+            dense_results = []
 
         # ── Leg 2: Sparse retrieval (BM25 keyword scoring) ─────────────
-        sparse_results = self._sparse_search(query, n_candidates=n_sparse)
+        try:
+            sparse_results = self._sparse_search(query, n_candidates=n_sparse)
+        except Exception as exc:
+            logger.error("Sparse retrieval failed: %s. Continuing with dense-only fallback.", exc)
+            sparse_results = []
+
+        # Both legs failed — return empty with warning
+        if not dense_results and not sparse_results:
+            logger.warning(
+                "Both dense and sparse retrieval returned zero candidates for query: '%s'. "
+                "LLM will receive no context and will respond based on its training.",
+                query[:80]
+            )
+            return []
 
         # ── Fusion: Reciprocal Rank Fusion ─────────────────────────────
         fused_candidates = self._reciprocal_rank_fusion(dense_results, sparse_results)
@@ -340,7 +377,7 @@ class RAGEngine:
             logger.warning("RRF produced zero candidates for query: '%s'", query[:80])
             return []
 
-        # ── Reranking: BAAI/bge-reranker-large ─────────────────────────
+        # ── Reranking: Cross-encoder with graceful degradation ────────
         reranked = self._rerank(query, fused_candidates, final_n=FINAL_TOP_N)
 
         elapsed = time.perf_counter() - t_start
@@ -367,18 +404,29 @@ class RAGEngine:
 
         Returns:
             List of dicts: {chunk_id, text, source, page, dense_score}
+            
+        Raises:
+            Exception: If embedding or ChromaDB query fails (caught by hybrid_search).
         """
-        query_embedding = self._embedding_model.encode(
-            query,
-            normalize_embeddings=True,   # Required for cosine similarity
-            show_progress_bar=False,
-        ).tolist()
+        try:
+            query_embedding = self._embedding_model.encode(
+                query,
+                normalize_embeddings=True,   # Required for cosine similarity
+                show_progress_bar=False,
+            ).tolist()
+        except Exception as exc:
+            logger.error("Embedding model failed to encode query: %s", exc)
+            raise
 
-        result = self._collection.query(
-            query_embeddings=[query_embedding],
-            n_results=n_candidates,
-            include=["documents", "metadatas", "distances"],
-        )
+        try:
+            result = self._collection.query(
+                query_embeddings=[query_embedding],
+                n_results=n_candidates,
+                include=["documents", "metadatas", "distances"],
+            )
+        except Exception as exc:
+            logger.error("ChromaDB query failed: %s", exc)
+            raise
 
         candidates = []
         for i, chunk_id in enumerate(result["ids"][0]):
@@ -413,14 +461,21 @@ class RAGEngine:
 
         Returns:
             List of dicts: {chunk_id, text, source, page, bm25_score}
-            Returns empty list if the BM25 index has not been built.
+            Returns empty list if the BM25 index has not been built or if scoring fails.
+            
+        Raises:
+            Exception: If BM25 scoring fails (caught by hybrid_search).
         """
         if self._bm25_index is None:
             logger.debug("BM25 index not available — skipping sparse retrieval leg.")
             return []
 
-        tokenised_query = self._tokenize(query)
-        raw_scores = self._bm25_index.get_scores(tokenised_query)
+        try:
+            tokenised_query = self._tokenize(query)
+            raw_scores = self._bm25_index.get_scores(tokenised_query)
+        except Exception as exc:
+            logger.error("BM25 scoring failed: %s", exc)
+            raise
 
         # Normalise scores to [0, 1] using the max score in this query
         max_score = max(raw_scores) if max(raw_scores) > 0 else 1.0
@@ -434,10 +489,15 @@ class RAGEngine:
         # Look up the full text and metadata for each candidate from ChromaDB
         # We only fetch IDs we actually need — avoids a full collection scan
         top_ids = [self._bm25_doc_ids[i] for i in sorted_indices]
-        result = self._collection.get(
-            ids=top_ids,
-            include=["documents", "metadatas"],
-        )
+        
+        try:
+            result = self._collection.get(
+                ids=top_ids,
+                include=["documents", "metadatas"],
+            )
+        except Exception as exc:
+            logger.error("ChromaDB lookup for sparse candidates failed: %s", exc)
+            raise
 
         # Build a lookup so we can preserve the score-sorted order
         id_to_doc  = {rid: doc  for rid, doc  in zip(result["ids"], result["documents"])}
@@ -516,11 +576,13 @@ class RAGEngine:
         final_n: int,
     ) -> list[RetrievedChunk]:
         """
-        Score each (query, candidate_text) pair with the BAAI/bge-reranker-large
-        cross-encoder and return the top final_n results.
+        Score each (query, candidate_text) pair with the cross-encoder reranker
+        and return the top final_n results.
 
         The cross-encoder produces raw logit scores — higher is more relevant.
         We do not normalise them because only relative ordering matters.
+        
+        If reranking fails, gracefully falls back to RRF ordering.
 
         Returns:
             List of RetrievedChunk sorted by rerank_score descending.
@@ -529,11 +591,15 @@ class RAGEngine:
             return []
 
         pairs = [[query, doc["text"]] for doc in candidates]
+        
         try:
-            scores = self._reranker.compute_score(pairs, normalize=False)
+            scores = self._reranker.predict(pairs)
+            if hasattr(scores, "tolist"):
+                scores = scores.tolist()
         except Exception as exc:
-            logger.error(
-                "Reranker failed — falling back to RRF ordering. Error: %s", exc
+            logger.warning(
+                "Reranker failed (attempted %d pairs) — falling back to RRF ordering. Error: %s", 
+                len(pairs), exc
             )
             # Graceful degradation: return top final_n by RRF score as RetrievedChunks
             return [
@@ -552,7 +618,23 @@ class RAGEngine:
 
         # scores is a list[float] aligned with candidates
         if not isinstance(scores, list):
-            scores = list(scores)
+            try:
+                scores = list(scores)
+            except Exception as exc:
+                logger.warning("Failed to convert scores to list, using RRF fallback: %s", exc)
+                return [
+                    RetrievedChunk(
+                        chunk_id=doc["chunk_id"],
+                        text=doc["text"],
+                        source=doc.get("source", "unknown"),
+                        page=doc.get("page", 0),
+                        dense_score=doc.get("dense_score", 0.0),
+                        bm25_score=doc.get("bm25_score", 0.0),
+                        rrf_score=doc.get("rrf_score", 0.0),
+                        rerank_score=doc.get("rrf_score", 0.0),
+                    )
+                    for doc in candidates[:final_n]
+                ]
 
         # Pair scores with candidates and sort
         scored = sorted(zip(scores, candidates), key=lambda x: x[0], reverse=True)

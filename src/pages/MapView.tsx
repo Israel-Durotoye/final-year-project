@@ -26,9 +26,9 @@ const MapView = () => {
       setError(null);
       try {
         const { data, error: sbError } = await supabase
-          .from("sensor_telemetry")
+          .from("capstone_dataset")
           .select("*")
-          .order("timestamp_utc", { ascending: false })
+          .order("Timestamp", { ascending: false })
           .limit(1000);
 
         if (sbError) throw sbError;
@@ -38,7 +38,7 @@ const MapView = () => {
         // Reduce to one latest row per distinct node_id
         const seen = new Map<string, any>();
         for (const row of arr) {
-          const id = String(row.node_id);
+          const id = String(row.Node_ID);
           if (!seen.has(id)) seen.set(id, row);
         }
 
@@ -54,18 +54,18 @@ const MapView = () => {
     fetchLatestPerNode();
   }, []);
 
-  const node = nodesLatest.find((n) => String(n.node_id) === String(selected));
+  const node = nodesLatest.find((n) => String(n.Node_ID) === String(selected));
 
   const getLayerColor = (layer: LayerType, n: any) => {
     const isOnline = !(n.communication_ok === false || n.communication_ok === 0 || n.communication_ok === "false");
 
     if (layer === "moisture") {
-      const v = Number(n.soil_moisture ?? n.moisture ?? 0);
+      const v = Number(n["Moisture_%"] ?? 0);
       if (v < 30) return "#ef4444"; // red (low moisture)
       return "#10b981"; // green (good moisture)
     }
     if (layer === "nitrogen") {
-      const v = Number(n.nitrogen_ppm ?? n.nitrogen ?? 0);
+      const v = Number(n.Nitrogen_mg_k ?? 0);
       if (v < 25) return "#ef4444"; // red (low nitrogen)
       return "#10b981"; // green (good nitrogen)
     }
@@ -75,8 +75,8 @@ const MapView = () => {
     if (layer === "health") {
       if (!isOnline) return "#ef4444"; // red (offline)
       
-      const nit = Number(n.nitrogen_ppm ?? n.nitrogen ?? 0);
-      const moisture = Number(n.soil_moisture ?? n.moisture ?? 0);
+      const nit = Number(n.Nitrogen_mg_k ?? 0);
+      const moisture = Number(n["Moisture_%"] ?? 0);
       
       if (nit < 20 || moisture < 25) return "#ef4444"; // red (poor)
       if ((nit >= 20 && nit <= 30) || (moisture >= 25 && moisture <= 35)) return "#f59e0b"; // amber (fair)
@@ -109,12 +109,12 @@ const MapView = () => {
               interactive={true}
             >
               {activeLayer !== "none" && nodesLatest.map((n) => {
-                const lat = Number(n.latitude ?? n.lat);
-                const lng = Number(n.longitude ?? n.lng);
+                const lat = Number(n.Latitude ?? n.lat);
+                const lng = Number(n.Longitude ?? n.lng);
                 if (isNaN(lat) || isNaN(lng)) return null;
                 return (
                   <CircleMarker
-                    key={`circle-${n.node_id}`}
+                    key={`circle-${n.Node_ID}`}
                     center={[lat, lng]}
                     radius={45} // 45 pixels radius
                     pathOptions={{
@@ -178,11 +178,11 @@ const MapView = () => {
               <div className="space-y-3">
                 <div>
                   <p className="text-[10px] font-sans font-bold uppercase tracking-widest text-muted-foreground">Selected</p>
-                  <p className="text-xl font-display font-bold uppercase tracking-wider">{node.node_id}</p>
-                  <p className="text-xs font-mono text-muted-foreground">{node.farm ?? "-"} · {node.location ?? "-"}</p>
+                  <p className="text-xl font-display font-bold uppercase tracking-wider">{node.Node_ID}</p>
+                  <p className="text-xs font-mono text-muted-foreground">{node.Target_Crop ?? "-"} · {node.Season ?? "-"}</p>
                 </div>
                 <div className="grid grid-cols-2 gap-2 pt-4 border-t border-white/10">
-                  {Object.entries(node).filter(([k]) => k !== "id" && k !== "node_id").map(([k, v]) => (
+                  {Object.entries(node).filter(([k]) => k !== "id" && k !== "Node_ID").map(([k, v]) => (
                     <div key={k} className="bg-black/20 rounded-lg p-2.5 border border-white/5">
                       <p className="text-[9px] font-mono uppercase tracking-widest text-muted-foreground">{k.replace(/_/g, ' ')}</p>
                       <p className="text-sm font-mono font-bold mt-0.5 truncate" title={String(v)}>{String(v)}</p>

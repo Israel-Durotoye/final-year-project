@@ -1,5 +1,5 @@
 import { PageHeader } from "@/components/layout/PageHeader";
-import { Server, AlertTriangle, TrendingUp, Radio, Leaf, FlaskConical, Sprout, Droplets, CloudRain, Thermometer, Stethoscope, LucideIcon } from "lucide-react";
+import { Server, AlertTriangle, TrendingUp, Radio, Leaf, FlaskConical, Sprout, Droplets, Waves, Thermometer, Stethoscope, FlaskRound, LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
@@ -10,12 +10,11 @@ type Tone = "good" | "fair" | "poor";
 
 // Score thresholds for each metric (min-good, min-fair)
 const ranges: Record<string, { good: [number, number]; fair: [number, number]; unit: string }> = {
-  nitrogen:    { good: [25, 50], fair: [15, 60], unit: "ppm" },
-  phosphorus:  { good: [40, 65], fair: [30, 75], unit: "ppm" },
-  potassium:   { good: [180, 230], fair: [150, 260], unit: "ppm" },
-  moisture:    { good: [35, 55], fair: [25, 65], unit: "%" },
-  humidity:    { good: [60, 75], fair: [50, 80], unit: "%" },
-  temperature: { good: [22, 26], fair: [18, 30], unit: "°C" },
+  Nitrogen_mg_k:   { good: [25, 50],   fair: [15, 60],   unit: "mg/kg" },
+  Phosphorus_m: { good: [40, 65],   fair: [30, 75],   unit: "mg/kg" },
+  Potassium_mg_:  { good: [180, 230], fair: [150, 260],  unit: "mg/kg" },
+  "Moisture_%":  { good: [35, 55],   fair: [25, 65],   unit: "%" },
+  Temperature_C: { good: [22, 26], fair: [18, 30], unit: "°C" },
 };
 
 const scoreMetric = (key: string, v: number): Tone => {
@@ -99,8 +98,8 @@ const Nodes = () => {
   const calculateNodeStatus = (node: any): string => {
     // OFFLINE if communication_ok is explicitly false
     if (node.communication_ok === false || node.communication_ok === 0 || node.communication_ok === "false") return "OFFLINE";
-    const n = Number(node.nitrogen_ppm ?? node.nitrogen ?? 0);
-    const moisture = Number(node.soil_moisture ?? node.moisture ?? 0);
+    const n = Number(node.Nitrogen_mg_k ?? 0);
+    const moisture = Number(node["Moisture_%"] ?? 0);
     if (n < 20 || moisture < 25) return "POOR";
     if ((n >= 20 && n <= 30) || (moisture >= 25 && moisture <= 35)) return "FAIR";
     return "GOOD";
@@ -113,15 +112,15 @@ const Nodes = () => {
       setError(null);
       try {
         const { data, error: sbError } = await supabase
-          .from("sensor_telemetry")
+          .from("capstone_dataset")
           .select("*")
-          .order("timestamp_utc", { ascending: false })
+          .order("Timestamp", { ascending: false })
           .limit(100);
         if (sbError) throw sbError;
         const rows = Array.isArray(data) ? data : [];
         // Reduce to latest row per node_id
         const reduced = rows.reduce((acc: Map<string, any>, row: any) => {
-          const id = row.node_id;
+          const id = row.Node_ID;
           if (!acc.has(id)) acc.set(id, row);
           return acc;
         }, new Map<string, any>());
@@ -164,7 +163,7 @@ const Nodes = () => {
             const badgeLabel = status;
 
             return (
-              <div key={n.node_id} className="bg-card border border-border rounded-xl p-5 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-all flex flex-col">
+              <div key={n.Node_ID} className="bg-card border border-border rounded-xl p-5 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-all flex flex-col">
                 {/* Header */}
                 <div className="flex items-start justify-between mb-4">
                   <div className="flex items-center gap-3">
@@ -172,8 +171,8 @@ const Nodes = () => {
                       <Radio className="h-5 w-5" />
                     </div>
                     <div>
-                      <h3 className="font-bold tracking-tight text-base">{n.node_id}</h3>
-                      <p className="text-xs text-muted-foreground">{n.farm ?? "-"} · {n.location ?? "-"}</p>
+                      <h3 className="font-bold tracking-tight text-base">{n.Node_ID}</h3>
+                      <p className="text-xs text-muted-foreground">{n.Target_Crop ?? "-"} · {n.Season ?? "-"}</p>
                     </div>
                   </div>
                   <span className={cn("inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider", status === "OFFLINE" ? "bg-muted text-muted-foreground" : t.badgeBg, status === "OFFLINE" ? "text-muted-foreground" : t.badgeText)}>
@@ -183,18 +182,17 @@ const Nodes = () => {
 
                 {/* Metrics list */}
                 <div className="flex flex-col gap-y-5 mb-6">
-                  <MetricCell icon={Leaf} label="Nitrogen" value={n.nitrogen_ppm ?? n.nitrogen ?? "-"} mKey="nitrogen" val={Number(n.nitrogen_ppm ?? n.nitrogen ?? 0)} />
-                  <MetricCell icon={FlaskConical} label="Phosphorus" value={n.phosphorus_ppm ?? n.phosphorus ?? "-"} mKey="phosphorus" val={Number(n.phosphorus_ppm ?? n.phosphorus ?? 0)} />
-                  <MetricCell icon={Sprout} label="Potassium" value={n.potassium_ppm ?? n.potassium ?? "-"} mKey="potassium" val={Number(n.potassium_ppm ?? n.potassium ?? 0)} />
-                  <MetricCell icon={Droplets} label="Moisture" value={n.soil_moisture ?? n.moisture ?? "-"} mKey="moisture" val={Number(n.soil_moisture ?? n.moisture ?? 0)} />
-                  <MetricCell icon={CloudRain} label="Humidity" value={n.humidity ?? "-"} mKey="humidity" val={Number(n.humidity ?? 0)} />
-                  <MetricCell icon={Thermometer} label="Temp" value={n.soil_temperature_c ?? n.temperature ?? "-"} mKey="temperature" val={Number(n.soil_temperature_c ?? n.temperature ?? 0)} />
+                  <MetricCell icon={Leaf}         label="Nitrogen"       value={n.Nitrogen_mg_k       ?? "-"} mKey="Nitrogen_mg_k"       val={Number(n.Nitrogen_mg_k       ?? 0)} />
+                  <MetricCell icon={FlaskConical}  label="Phosphorus"     value={n.Phosphorus_m     ?? "-"} mKey="Phosphorus_m"     val={Number(n.Phosphorus_m     ?? 0)} />
+                  <MetricCell icon={Sprout}        label="Potassium"      value={n.Potassium_mg_      ?? "-"} mKey="Potassium_mg_"      val={Number(n.Potassium_mg_      ?? 0)} />
+                  <MetricCell icon={Droplets}      label="Moisture"       value={n["Moisture_%"]      ?? "-"} mKey="Moisture_%"      val={Number(n["Moisture_%"]      ?? 0)} />
+                  <MetricCell icon={Thermometer}   label="Temp"           value={n.Temperature_C ?? "-"} mKey="Temperature_C" val={Number(n.Temperature_C ?? 0)} />
                 </div>
 
                 {/* CTA */}
                 <Button 
                   onClick={() => {
-                    const query = `Run a full diagnostic on ${n.node_id} using its latest telemetry: Nitrogen: ${n.nitrogen_ppm ?? n.nitrogen ?? "-"}ppm, Phosphorus: ${n.phosphorus_ppm ?? n.phosphorus ?? "-"}ppm, Potassium: ${n.potassium_ppm ?? n.potassium ?? "-"}ppm, Moisture: ${n.soil_moisture ?? n.moisture ?? "-"}%, Humidity: ${n.humidity ?? "-"}%, Temperature: ${n.soil_temperature_c ?? n.temperature ?? "-"}°C.`;
+                    const query = `Run a full diagnostic on ${n.Node_ID} using its latest telemetry: Nitrogen: ${n.Nitrogen_mg_k ?? "-"}mg/kg, Phosphorus: ${n.Phosphorus_m ?? "-"}mg/kg, Potassium: ${n.Potassium_mg_ ?? "-"}mg/kg, Moisture: ${n["Moisture_%"] ?? "-"}%, Temperature: ${n.Temperature_C ?? "-"}°C.`;
                     navigate('/ai-doctor', { state: { autoQuery: query } });
                   }} 
                   className="w-full mt-auto gradient-primary text-primary-foreground hover:opacity-95 shadow-glow h-11 text-sm tracking-wide"

@@ -24,3 +24,9 @@ dist-ssr
 *.sw?
 .env
 backend/data/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo

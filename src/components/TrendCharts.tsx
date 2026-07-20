@@ -25,21 +25,21 @@ export const TrendCharts = ({ rows, selectedId }: Props) => {
     if (!selectedId) return [];
     
     // Filter rows by selected node and sort chronologically (oldest to newest)
-    const nodeRows = rows.filter((r) => r.node_id === selectedId);
+    const nodeRows = rows.filter((r) => r.Node_ID === selectedId);
     const sorted = [...nodeRows].sort(
-      (a, b) => new Date(a.timestamp_utc).getTime() - new Date(b.timestamp_utc).getTime()
+      (a, b) => new Date(a.Timestamp).getTime() - new Date(b.Timestamp).getTime()
     );
 
     return sorted.map((r) => ({
       ...r,
-      formattedTime: format(new Date(r.timestamp_utc), "HH:mm"),
-      formattedDate: format(new Date(r.timestamp_utc), "MMM dd"),
-      n: Number(r.nitrogen_ppm ?? r.nitrogen ?? 0),
-      p: Number(r.phosphorus_ppm ?? r.phosphorus ?? 0),
-      k: Number(r.potassium_ppm ?? r.potassium ?? 0),
-      moisture: Number(r.soil_moisture ?? r.moisture ?? 0),
-      humidity: Number(r.humidity ?? 0),
-      temp: Number(r.soil_temperature_c ?? r.temperature ?? 0)
+      formattedTime: format(new Date(r.Timestamp), "HH:mm"),
+      formattedDate: format(new Date(r.Timestamp), "MMM dd"),
+      n: Number(r.Nitrogen_mg_k ?? 0),
+      p: Number(r.Phosphorus_m ?? 0),
+      k: Number(r.Potassium_mg_ ?? 0),
+      moisture: Number(r["Moisture_%"] ?? 0),
+      humidity: Number(r["Humidity_%"] ?? 0),
+      temp: Number(r.Temperature_C ?? 0)
     }));
   }, [rows, selectedId]);
 

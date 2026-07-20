@@ -54,10 +54,10 @@ export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, inter
   const normalizedNodes = useMemo(() => {
     return nodes.map((n) => {
       // Prioritize node_id. If a table has an 'id' primary key, we don't want it to override the node_id
-      const id = n.node_id || n.id;
-      const lat = Number(n.lat ?? n.latitude);
-      const lng = Number(n.lng ?? n.longitude);
-      const isOnline = n.status === "online" || n.communication_ok === true || n.communication_ok === 1 || n.communication_ok === "true" || n.communication_ok === undefined;
+      const id = n.Node_ID || n.id;
+      const lat = Number(n.Latitude ?? n.lat);
+      const lng = Number(n.Longitude ?? n.lng);
+      const isOnline = true; // simulation nodes are always online
       return { ...n, id: String(id), lat, lng, isOnline };
     }).filter((n) => !isNaN(n.lat) && !isNaN(n.lng));
   }, [nodes]);

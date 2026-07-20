@@ -30,7 +30,7 @@ from backend.prescriptive.evaluator import (
     EvaluationReport,
     ParameterFlag,
 )
-from backend.ml.mock_lora import MockLoRaNode, get_scenario_names
+from backend.prescriptive.mock_lora import MockLoRaNode, get_scenario_names
 
 
 # ---------------------------------------------------------------------------

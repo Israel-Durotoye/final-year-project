@@ -22,18 +22,18 @@ const DataTable = () => {
     setError(null);
     try {
       let query: any = supabase
-        .from("sensor_telemetry")
+        .from("capstone_dataset")
         .select("*")
-        .order("timestamp_utc", { ascending: false });
+        .order("Timestamp", { ascending: false });
 
       if (opts?.start) {
         const startISO = new Date(opts.start).toISOString();
-        query = query.gte("timestamp_utc", startISO);
+        query = query.gte("Timestamp", startISO);
       }
       if (opts?.end) {
         // include end of day by default if only date provided
         const endISO = new Date(opts.end).toISOString();
-        query = query.lte("timestamp_utc", endISO);
+        query = query.lte("Timestamp", endISO);
       }
 
       const { data, error: sbError } = await query;
@@ -63,6 +63,28 @@ const DataTable = () => {
     fetchTelemetry();
   };
 
+  const [training, setTraining] = useState(false);
+
+  const handleTrainModel = async () => {
+    setTraining(true);
+    toast.info("LSTM anomaly model training started in background.");
+    try {
+      const response = await fetch("http://localhost:8000/api/v1/ml/train-anomaly-model", {
+        method: "POST",
+      });
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.status}`);
+      }
+      toast.success("Training job submitted successfully.");
+    } catch (err: any) {
+      toast.error(`Training failed to start: ${err.message}`);
+    } finally {
+      // We set training to false even if it runs in background just to unlock the button,
+      // or we can keep it true for a few seconds.
+      setTimeout(() => setTraining(false), 5000);
+    }
+  };
+
   return (
     <>
       <PageHeader title="Data Table" subtitle="Historical telemetry logs across all nodes" />
@@ -80,6 +102,9 @@ const DataTable = () => {
             </div>
             <Button variant="outline" onClick={handleClear} className="ml-2">Clear</Button>
             <Button onClick={handleFilterApply} className="ml-2">Apply</Button>
+            <Button variant="secondary" onClick={handleTrainModel} disabled={training} className="ml-auto">
+              {training ? "Training..." : "Train Anomaly Model"}
+            </Button>
           </div>
         </div>
 
@@ -94,7 +119,7 @@ const DataTable = () => {
                 <thead className="bg-secondary/60">
                   <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground">
                     {[
-                      "NODE ID","N","P","K","MOISTURE","HUMIDITY","TEMP","pH","BATTERY","LAT","LNG","STATUS","TIMESTAMP"
+                      "NODE ID","N","P","K","MOISTURE","TEMP","HUMIDITY","LAT","LNG","ALTITUDE","SATS","TIMESTAMP"
                     ].map(h => (
                       <th key={h} className="px-4 py-3 font-semibold">{h}</th>
                     ))}
@@ -103,25 +128,18 @@ const DataTable = () => {
                 <tbody>
                   {telemetry.map((r, i) => (
                     <tr key={i} className="border-t border-border hover:bg-secondary/40 transition-colors">
-                      <td className="px-4 py-3 font-semibold text-primary">{r.node_id}</td>
-                      <td className="px-4 py-3">{r.nitrogen_ppm ?? "-"}</td>
-                      <td className="px-4 py-3">{r.phosphorus_ppm ?? "-"}</td>
-                      <td className="px-4 py-3">{r.potassium_ppm ?? "-"}</td>
-                      <td className="px-4 py-3">{typeof r.soil_moisture === 'number' ? `${r.soil_moisture}%` : (r.soil_moisture ?? "-")}</td>
-                      <td className="px-4 py-3">{typeof r.humidity === 'number' ? `${r.humidity}%` : (r.humidity ?? "-")}</td>
-                      <td className="px-4 py-3">{typeof r.soil_temperature_c === 'number' ? `${r.soil_temperature_c}°C` : (r.soil_temperature_c ?? "-")}</td>
-                      <td className="px-4 py-3">{r.ph ?? "-"}</td>
-                      <td className="px-4 py-3">{typeof r.battery_voltage === 'number' ? `${r.battery_voltage}V` : (r.battery_voltage ?? "-")}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{typeof r.latitude === 'number' ? r.latitude.toFixed(4) : (r.latitude ?? "-")}</td>
-                      <td className="px-4 py-3 text-muted-foreground">{typeof r.longitude === 'number' ? r.longitude.toFixed(4) : (r.longitude ?? "-")}</td>
-                      <td className="px-4 py-3">
-                        {r.communication_ok ? (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-green-100 text-green-800 text-xs">Online</span>
-                        ) : (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-red-100 text-red-800 text-xs">Offline</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{r.timestamp_utc ? new Date(r.timestamp_utc).toLocaleString() : "-"}</td>
+                      <td className="px-4 py-3 font-semibold text-primary">{r.Node_ID}</td>
+                      <td className="px-4 py-3">{r.Nitrogen_mg_k ?? "-"}</td>
+                      <td className="px-4 py-3">{r.Phosphorus_m ?? "-"}</td>
+                      <td className="px-4 py-3">{r.Potassium_mg_ ?? "-"}</td>
+                      <td className="px-4 py-3">{typeof r["Moisture_%"] === 'number' ? `${r["Moisture_%"]}%` : (r["Moisture_%"] ?? "-")}</td>
+                      <td className="px-4 py-3">{typeof r.Temperature_C === 'number' ? `${r.Temperature_C}°C` : (r.Temperature_C ?? "-")}</td>
+                      <td className="px-4 py-3">{typeof r["Humidity_%"] === 'number' ? `${r["Humidity_%"]}%` : (r["Humidity_%"] ?? "-")}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{typeof r.Latitude === 'number' ? r.Latitude.toFixed(4) : (r.Latitude ?? "-")}</td>
+                      <td className="px-4 py-3 text-muted-foreground">{typeof r.Longitude === 'number' ? r.Longitude.toFixed(4) : (r.Longitude ?? "-")}</td>
+                      <td className="px-4 py-3">{r.Altitude_m ?? "-"}</td>
+                      <td className="px-4 py-3">{r.Satellites ?? "-"}</td>
+                      <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{r.Timestamp ? new Date(r.Timestamp).toLocaleString() : "-"}</td>
                     </tr>
                   ))}
                 </tbody>

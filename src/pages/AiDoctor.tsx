@@ -8,6 +8,15 @@ import ReactMarkdown from "react-markdown";
 
 interface Msg { role: "user" | "assistant"; content: string; }
 
+const LOCAL_STORAGE_KEY = "soil-doctor-conversation";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
+
+const defaultAssistantMessage: Msg = {
+  role: "assistant",
+  content:
+    "👋 Hello! I'm your AI Soil Doctor. Ask me anything about your fields, soil chemistry, or crop health.",
+};
+
 const suggestions = [
   { icon: Leaf, text: "Which crops suit my current N-P-K levels?" },
   { icon: Droplets, text: "How should I adjust irrigation for NODE_04?" },
@@ -29,9 +38,42 @@ const sampleResponse = `Based on telemetry across your **6 nodes**, here's my as
 > Reach optimal yields by addressing nitrogen deficiency this week.`;
 
 const AiDoctor = () => {
-  const [messages, setMessages] = useState<Msg[]>([
-    { role: 'assistant', content: "👋 Hello! I'm your AI Soil Doctor. Ask me anything about your fields, soil chemistry, or crop health." },
-  ]);
+  const [conversationId, setConversationId] = useState<string>(() => {
+    if (typeof window === "undefined") {
+      return `conv-${Date.now()}`;
+    }
+
+    try {
+      const stored = window.localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (!stored) {
+        return window.crypto?.randomUUID?.() ?? `conv-${Date.now()}`;
+      }
+
+      const parsed = JSON.parse(stored);
+      return parsed?.conversationId ?? window.crypto?.randomUUID?.() ?? `conv-${Date.now()}`;
+    } catch {
+      return window.crypto?.randomUUID?.() ?? `conv-${Date.now()}`;
+    }
+  });
+
+  const [messages, setMessages] = useState<Msg[]>(() => {
+    if (typeof window === "undefined") {
+      return [defaultAssistantMessage];
+    }
+
+    try {
+      const stored = window.localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (!stored) return [defaultAssistantMessage];
+
+      const parsed = JSON.parse(stored);
+      return Array.isArray(parsed?.messages) && parsed.messages.length > 0
+        ? parsed.messages
+        : [defaultAssistantMessage];
+    } catch {
+      return [defaultAssistantMessage];
+    }
+  });
+
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
@@ -40,21 +82,54 @@ const AiDoctor = () => {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, isLoading]);
 
+  useEffect(() => {
+    if (!conversationId) return;
+
+    const syncHistory = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/chat/history/${conversationId}`);
+        if (!res.ok) {
+          return;
+        }
+
+        const data = await res.json();
+        if (Array.isArray(data?.messages) && data.messages.length > messages.length) {
+          setMessages(data.messages);
+        }
+      } catch {
+        // Server history is best-effort; continue with local cache.
+      }
+    };
+
+    void syncHistory();
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (!conversationId) return;
+    window.localStorage.setItem(
+      LOCAL_STORAGE_KEY,
+      JSON.stringify({ conversationId, messages }),
+    );
+  }, [conversationId, messages]);
+
   const handleSendMessage = async (e?: any) => {
     if (e) e.preventDefault();
     const user_query = inputValue.trim();
     if (!user_query) return;
 
+    const history = messages;
+    const nextMessages = [...history, { role: 'user', content: user_query }];
+
     // append user message immediately
-    setMessages((m) => [...m, { role: 'user', content: user_query }]);
+    setMessages(nextMessages);
     setInputValue("");
     setIsLoading(true);
 
     try {
-      const res = await fetch("http://localhost:8000/api/v1/chat/", {
+      const res = await fetch(`${API_BASE}/chat/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: user_query }),
+        body: JSON.stringify({ query: user_query, history, conversation_id: conversationId }),
       });
 
       if (!res.ok) {
@@ -75,14 +150,17 @@ const AiDoctor = () => {
     const user_query = text.trim();
     if (!user_query) return;
 
-    setMessages((m) => [...m, { role: 'user', content: user_query }]);
+    const history = messages;
+    const nextMessages = [...history, { role: 'user', content: user_query }];
+
+    setMessages(nextMessages);
     setIsLoading(true);
 
     try {
-      const res = await fetch("http://localhost:8000/api/v1/chat/", {
+      const res = await fetch(`${API_BASE}/chat/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: user_query }),
+        body: JSON.stringify({ query: user_query, history, conversation_id: conversationId }),
       });
 
       if (!res.ok) {

@@ -4,7 +4,7 @@ import { MetricCard } from "@/components/MetricCard";
 import { MapPreview } from "@/components/MapPreview";
 import { TrendCharts } from "@/components/TrendCharts";
 import {
-  Radio, Leaf, FlaskConical, Droplets, CloudRain, Thermometer, Sprout,
+  Radio, Leaf, FlaskConical, Droplets, CloudRain, Thermometer, Sprout, MapPin, Satellite
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createClient } from "@supabase/supabase-js";
@@ -27,9 +27,9 @@ const Dashboard = () => {
       setError(null);
       try {
         const { data, error: sbError } = await supabase
-          .from("sensor_telemetry")
+          .from("capstone_dataset")
           .select("*")
-          .order("timestamp_utc", { ascending: false })
+          .order("Timestamp", { ascending: false })
           .limit(300);
         if (sbError) throw sbError;
         const arr = Array.isArray(data) ? data : [];
@@ -39,12 +39,12 @@ const Dashboard = () => {
         // Reduce to latest per node_id
         const seen = new Map<string, any>();
         for (const r of arr) {
-          const id = r.node_id;
+          const id = r.Node_ID;
           if (!seen.has(id)) seen.set(id, r);
         }
         const latest = Array.from(seen.values());
         setLatestNodes(latest);
-        if (!selected && latest.length) setSelected(latest[0].node_id);
+        if (!selected && latest.length) setSelected(latest[0].Node_ID);
       } catch (err: any) {
         setError(err.message || String(err));
         setRows([]);
@@ -57,7 +57,7 @@ const Dashboard = () => {
     return () => { mounted = false; };
   }, []);
 
-  const node = latestNodes.find((n) => n.node_id === selected) ?? latestNodes[0];
+  const node = latestNodes.find((n) => n.Node_ID === selected) ?? latestNodes[0];
 
   return (
     <>
@@ -66,8 +66,8 @@ const Dashboard = () => {
         {/* Top metrics — computed from Supabase rows */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <MetricCard icon={Radio} label="Total Nodes" value={latestNodes.length} trend="Unique nodes" tone="info" />
-          <MetricCard icon={Droplets} label="Avg Soil Moisture" value={rows.length ? `${(rows.reduce((s, r) => s + Number(r.soil_moisture || 0), 0) / rows.length).toFixed(1)}%` : "-"} trend="Network average" tone="success" />
-          <MetricCard icon={Leaf} label="Avg pH" value={rows.length ? (rows.reduce((s, r) => s + Number(r.ph || 0), 0) / rows.length).toFixed(2) : "-"} trend="Network average" tone="info" />
+          <MetricCard icon={Droplets} label="Avg Soil Moisture" value={rows.length ? `${(rows.reduce((s, r) => s + Number(r["Moisture_%"] || 0), 0) / rows.length).toFixed(1)}%` : "-"} trend="Network average" tone="success" />
+          <MetricCard icon={Thermometer} label="Avg Temp" value={rows.length ? `${(rows.reduce((s, r) => s + Number(r.Temperature_C || 0), 0) / rows.length).toFixed(1)}°C` : "-"} trend="Network average" tone="warning" />
         </div>
 
         {/* Node parameters */}
@@ -75,32 +75,34 @@ const Dashboard = () => {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-5 border-b border-border">
             <div>
               <h2 className="text-lg font-semibold">Node Parameters</h2>
-              <p className="text-sm text-muted-foreground">Live readings · {node?.farm ?? "-"} — {node?.location ?? "-"}</p>
+              <p className="text-sm text-muted-foreground">Live readings · {node?.Target_Crop ?? "-"} — {node?.Season ?? "-"}</p>
             </div>
             <div className="flex flex-wrap gap-2">
               {latestNodes.map((n) => (
                 <button
-                  key={n.node_id}
-                  onClick={() => setSelected(n.node_id)}
+                  key={n.Node_ID}
+                  onClick={() => setSelected(n.Node_ID)}
                   className={cn(
                     "px-3 py-1.5 rounded-lg text-[10px] font-mono font-bold tracking-wider uppercase border transition-all",
-                    selected === n.node_id
+                    selected === n.Node_ID
                       ? "bg-primary text-primary-foreground border-primary shadow-glow"
                       : "bg-secondary text-secondary-foreground border-white/5 hover:border-primary/50"
                   )}
                 >
-                  {n.node_id}
+                  {n.Node_ID}
                 </button>
               ))}
             </div>
           </div>
-          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 p-5">
-            <MetricCard icon={Leaf} label="Nitrogen" value={node ? (node.nitrogen_ppm ?? node.nitrogen ?? "-") : "-"} unit="ppm" tone="success" />
-            <MetricCard icon={FlaskConical} label="Phosphorus" value={node ? (node.phosphorus_ppm ?? node.phosphorus ?? "-") : "-"} unit="ppm" tone="info" />
-            <MetricCard icon={Sprout} label="Potassium" value={node ? (node.potassium_ppm ?? node.potassium ?? "-") : "-"} unit="ppm" tone="success" />
-            <MetricCard icon={Droplets} label="Soil Moisture" value={node ? (node.soil_moisture ?? node.moisture ?? "-") : "-"} unit="%" tone="info" />
-            <MetricCard icon={CloudRain} label="Humidity" value={node ? (node.humidity ?? "-") : "-"} unit="%" tone="default" />
-            <MetricCard icon={Thermometer} label="Temperature" value={node ? (node.soil_temperature_c ?? node.temperature ?? "-") : "-"} unit="°C" tone="warning" />
+          <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-4 gap-4 p-5">
+            <MetricCard icon={Leaf} label="Nitrogen" value={node ? (node.Nitrogen_mg_k ?? "-") : "-"} unit="mg/kg" tone="success" />
+            <MetricCard icon={FlaskConical} label="Phosphorus" value={node ? (node.Phosphorus_m ?? "-") : "-"} unit="mg/kg" tone="info" />
+            <MetricCard icon={Sprout} label="Potassium" value={node ? (node.Potassium_mg_ ?? "-") : "-"} unit="mg/kg" tone="success" />
+            <MetricCard icon={Droplets} label="Soil Moisture" value={node ? (node["Moisture_%"] ?? "-") : "-"} unit="%" tone="info" />
+            <MetricCard icon={CloudRain} label="Humidity" value={node ? (node["Humidity_%"] ?? "-") : "-"} unit="%" tone="default" />
+            <MetricCard icon={Thermometer} label="Temperature" value={node ? (node.Temperature_C ?? "-") : "-"} unit="°C" tone="warning" />
+            <MetricCard icon={MapPin} label="Altitude" value={node ? (node.Altitude_m ?? "-") : "-"} unit="m" tone="default" />
+            <MetricCard icon={Satellite} label="Satellites" value={node ? (node.Satellites ?? "-") : "-"} unit="" tone="info" />
           </div>
         </section>
 
