@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Path to the ground-truth schema
 # ---------------------------------------------------------------------------
-_THRESHOLDS_PATH = Path(__file__).parent.parent / "data" / "optimal_thresholds.json"
+_DEFAULT_THRESHOLDS_PATH = Path(__file__).resolve().parent.parent / "data" / "optimal_thresholds.json"
+_ROOT_THRESHOLDS_PATH = Path(__file__).resolve().parent.parent.parent / "optimal_thresholds.json"
 
 
 # ---------------------------------------------------------------------------
@@ -187,8 +188,9 @@ class ThresholdEvaluator:
     No LLM calls, no randomness, no side effects after __init__.
     """
 
-    def __init__(self, thresholds_path: Path = _THRESHOLDS_PATH) -> None:
-        self._thresholds = self._load_thresholds(thresholds_path)
+    def __init__(self, thresholds_path: Path | None = None) -> None:
+        resolved_path = self._resolve_thresholds_path(thresholds_path)
+        self._thresholds = self._load_thresholds(resolved_path)
         logger.info("ThresholdEvaluator initialized. Schema version: %s",
                     self._thresholds.get("_schema_version", "unknown"))
 
@@ -372,11 +374,27 @@ class ThresholdEvaluator:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _resolve_thresholds_path(path: Path | None = None) -> Path:
+        candidates: list[Path] = []
+        if path is not None:
+            candidates.append(Path(path))
+        candidates.extend([
+            _DEFAULT_THRESHOLDS_PATH,
+            _ROOT_THRESHOLDS_PATH,
+        ])
+
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+
+        return candidates[0] if candidates else _DEFAULT_THRESHOLDS_PATH
+
+    @staticmethod
     def _load_thresholds(path: Path) -> dict:
         if not path.exists():
             raise FileNotFoundError(
                 f"Thresholds file not found at: {path}\n"
-                "Ensure optimal_thresholds.json is in backend/data/"
+                "Ensure optimal_thresholds.json is available in backend/data/ or the project root."
             )
         with path.open("r", encoding="utf-8") as fh:
             data = json.load(fh)

@@ -1,0 +1,210 @@
+{
+  "_schema_version": "1.0",
+  "crop_profiles": {
+    "maize_corn": {
+      "parameters": {
+        "soil_ph": {
+          "display_name": "Soil pH",
+          "unit": "pH",
+          "optimal_min": 5.8,
+          "optimal_max": 7.0,
+          "critical_min": 5.0,
+          "critical_max": 8.0,
+          "direction_labels": {
+            "low": "acidic",
+            "high": "alkaline",
+            "none": "within optimal range"
+          },
+          "intervention_hints": {
+            "low": "Apply lime or organic matter to raise pH gradually.",
+            "high": "Apply sulfur or acidifying amendments to lower pH gradually.",
+            "none": "Maintain current management and monitor trends."
+          }
+        },
+        "soil_moisture": {
+          "display_name": "Soil Moisture",
+          "unit": "%",
+          "optimal_min": 40.0,
+          "optimal_max": 70.0,
+          "critical_min": 20.0,
+          "critical_max": 85.0,
+          "direction_labels": {
+            "low": "dry",
+            "high": "waterlogged",
+            "none": "within optimal range"
+          },
+          "intervention_hints": {
+            "low": "Increase irrigation frequency and monitor root-zone moisture.",
+            "high": "Improve drainage and reduce irrigation to prevent waterlogging.",
+            "none": "Maintain current irrigation scheduling."
+          }
+        },
+        "soil_temperature": {
+          "display_name": "Soil Temperature",
+          "unit": "°C",
+          "optimal_min": 18.0,
+          "optimal_max": 32.0,
+          "critical_min": 10.0,
+          "critical_max": 40.0,
+          "direction_labels": {
+            "low": "cold",
+            "high": "hot",
+            "none": "within optimal range"
+          },
+          "intervention_hints": {
+            "low": "Use mulching or delayed planting to warm the root-zone.",
+            "high": "Increase shading or irrigation to cool the root-zone.",
+            "none": "Maintain current thermal conditions."
+          }
+        },
+        "nitrogen_ppm": {
+          "display_name": "Available Nitrogen (N)",
+          "unit": "ppm",
+          "optimal_min": 20.0,
+          "optimal_max": 45.0,
+          "critical_min": 10.0,
+          "critical_max": 60.0,
+          "direction_labels": {
+            "low": "deficient",
+            "high": "excessive",
+            "none": "within optimal range"
+          },
+          "intervention_hints": {
+            "low": "Apply nitrogen fertilizer in split doses and monitor leaf color.",
+            "high": "Reduce nitrogen input and manage runoff to prevent leaching.",
+            "none": "Maintain current fertility management."
+          }
+        },
+        "phosphorus_ppm": {
+          "display_name": "Phosphorus",
+          "unit": "ppm",
+          "optimal_min": 15.0,
+          "optimal_max": 30.0,
+          "critical_min": 5.0,
+          "critical_max": 50.0,
+          "direction_labels": {
+            "low": "deficient",
+            "high": "excessive",
+            "none": "within optimal range"
+          },
+          "intervention_hints": {
+            "low": "Apply phosphate fertilizer based on soil test recommendations.",
+            "high": "Reduce phosphorus application and avoid over-fertilization.",
+            "none": "Maintain current phosphorus management."
+          }
+        },
+        "potassium_ppm": {
+          "display_name": "Potassium",
+          "unit": "ppm",
+          "optimal_min": 120.0,
+          "optimal_max": 280.0,
+          "critical_min": 55.0,
+          "critical_max": 400.0,
+          "direction_labels": {
+            "low": "deficient",
+            "high": "excessive",
+            "none": "within optimal range"
+          },
+          "intervention_hints": {
+            "low": "Apply potassium fertilizer and monitor tissue levels.",
+            "high": "Reduce potassium application to avoid luxury uptake and runoff.",
+            "none": "Maintain current potassium management."
+          }
+        },
+        "electrical_conductivity": {
+          "display_name": "Electrical Conductivity",
+          "unit": "dS/m",
+          "optimal_min": 0.5,
+          "optimal_max": 1.8,
+          "critical_min": 0.2,
+          "critical_max": 3.0,
+          "direction_labels": {
+            "low": "low salinity",
+            "high": "saline",
+            "none": "within optimal range"
+          },
+          "intervention_hints": {
+            "low": "Check nutrient availability and adjust fertilization carefully.",
+            "high": "Improve drainage and leach excess salts where appropriate.",
+            "none": "Maintain current salinity monitoring."
+          }
+        },
+        "organic_matter_percent": {
+          "display_name": "Organic Matter",
+          "unit": "%",
+          "optimal_min": 3.0,
+          "optimal_max": 6.0,
+          "critical_min": 1.0,
+          "critical_max": 8.0,
+          "direction_labels": {
+            "low": "depleted",
+            "high": "excessive",
+            "none": "within optimal range"
+          },
+          "intervention_hints": {
+            "low": "Add compost or cover crops to raise organic matter.",
+            "high": "Reduce residue accumulation and maintain balanced organic inputs.",
+            "none": "Maintain current soil organic matter practices."
+          }
+        },
+        "ambient_humidity": {
+          "display_name": "Ambient Humidity",
+          "unit": "%",
+          "optimal_min": 45.0,
+          "optimal_max": 80.0,
+          "critical_min": 25.0,
+          "critical_max": 95.0,
+          "direction_labels": {
+            "low": "dry",
+            "high": "humid",
+            "none": "within optimal range"
+          },
+          "intervention_hints": {
+            "low": "Monitor transpiration stress and adjust irrigation accordingly.",
+            "high": "Increase air circulation and manage disease pressure.",
+            "none": "Maintain current environmental monitoring."
+          }
+        },
+        "ambient_temperature": {
+          "display_name": "Ambient Temperature",
+          "unit": "°C",
+          "optimal_min": 22.0,
+          "optimal_max": 33.0,
+          "critical_min": 15.0,
+          "critical_max": 40.0,
+          "direction_labels": {
+            "low": "cool",
+            "high": "hot",
+            "none": "within optimal range"
+          },
+          "intervention_hints": {
+            "low": "Use protective cover or adjust planting timing.",
+            "high": "Increase shade and irrigation to reduce heat stress.",
+            "none": "Maintain current temperature monitoring."
+          }
+        }
+      },
+      "composite_health_scoring": {
+        "weights": {
+          "soil_ph": 1.0,
+          "soil_moisture": 1.0,
+          "soil_temperature": 1.0,
+          "nitrogen_ppm": 1.0,
+          "phosphorus_ppm": 1.0,
+          "potassium_ppm": 1.0,
+          "electrical_conductivity": 1.0,
+          "organic_matter_percent": 1.0,
+          "ambient_humidity": 1.0,
+          "ambient_temperature": 1.0
+        },
+        "score_bands": {
+          "EXCELLENT": {"min": 85.0, "max": 100.0, "label": "Excellent", "color": "#27ae60"},
+          "GOOD": {"min": 70.0, "max": 84.9, "label": "Good", "color": "#2ecc71"},
+          "FAIR": {"min": 50.0, "max": 69.9, "label": "Fair", "color": "#f1c40f"},
+          "POOR": {"min": 25.0, "max": 49.9, "label": "Poor", "color": "#e67e22"},
+          "CRITICAL": {"min": 0.0, "max": 24.9, "label": "Critical", "color": "#e74c3c"}
+        }
+      }
+    }
+  }
+}
