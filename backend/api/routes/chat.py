@@ -9,7 +9,7 @@ Responsibility:
             ↓
         rag_engine.hybrid_search(query)     ← retrieves context chunks
             ↓
-        chat_llm.generate_rag_response()    ← calls Gemini with grounded prompt
+        chat_llm.generate_rag_response()    ← calls AgentRouter/OpenAI-compatible ChatCompletion with grounded prompt
             ↓
         Response (ChatResponse)
 
@@ -86,6 +86,9 @@ _CONVERSATION_STORE_DIR = _BACKEND_DIR / "data" / "conversation_store"
 _CONVERSATION_STORE_DIR.mkdir(parents=True, exist_ok=True)
 
 _CONVERSATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+# Keep room for the current user message and the generated assistant reply when
+# a conversation is saved, while staying within ChatRequest.history's limit.
+_MAX_STORED_HISTORY_MESSAGES = 48
 
 
 def _validate_conversation_id(conversation_id: str) -> str:
@@ -125,7 +128,10 @@ def _load_conversation_history(conversation_id: str) -> list[dict[str, str]]:
         content = msg.get("content")
         if role in {"user", "assistant"} and isinstance(content, str):
             validated.append({"role": role, "content": content})
-    return validated
+    # Conversation files can outlive changes to the API limits.  Trim here so
+    # existing oversized files cannot make subsequent chat requests invalid or
+    # grow without bound after they are saved again.
+    return validated[-_MAX_STORED_HISTORY_MESSAGES:]
 
 
 def _save_conversation_history(conversation_id: str, messages: list[dict[str, str]]) -> None:
@@ -398,12 +404,12 @@ async def post_chat(request: ChatRequest) -> ChatResponse:
     except EnvironmentError as exc:
         # Missing API key — configuration problem, not a client error
         logger.error("API key error in generate_rag_response: %s", exc)
-        # Provide a clearer, actionable message for developers running locally.
         raise HTTPException(
-            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
-                "Server configuration error: missing or invalid Groq API key. "
-                "Set the GROQ_API_KEY environment variable with a valid key."
+                "Server configuration error: missing or invalid AgentRouter API key. "
+                "Set AGENTROUTER_API_KEY with a valid Agent Router key. "
+                "If you are using a separate AgentRouter auth token, set AGENTROUTER_AUTH_TOKEN as well."
             ),
         ) from exc
     except RuntimeError as exc:

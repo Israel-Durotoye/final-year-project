@@ -1,50 +1,105 @@
+import { useState } from "react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { BellRing, RotateCcw, Save } from "lucide-react";
+import { toast } from "sonner";
+import {
+  AlertThresholds,
+  DEFAULT_THRESHOLDS,
+  METRICS,
+  MetricKey,
+  loadAlertThresholds,
+  saveAlertThresholds,
+} from "@/lib/alerting";
 
-const Settings = () => (
-  <>
-    <PageHeader title="Settings" subtitle="Configure your account, alerts, and integrations" />
-    <div className="p-6 max-w-3xl space-y-6">
-      <section className="bg-card border border-border rounded-xl shadow-card p-6 space-y-4">
-        <h2 className="font-semibold text-lg">Profile</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="space-y-2"><Label>Full name</Label><Input defaultValue="Israel Durotoye" /></div>
-          <div className="space-y-2"><Label>Email</Label><Input defaultValue="israeldurotoye@gmail.com" /></div>
-        </div>
-      </section>
+const Settings = () => {
+  const [thresholds, setThresholds] = useState<AlertThresholds>(loadAlertThresholds);
+  const [notifications, setNotifications] = useState({ laptop: true, email: false, sms: false });
 
-      <section className="bg-card border border-border rounded-xl shadow-card p-6 space-y-4">
-        <h2 className="font-semibold text-lg">Alert Thresholds</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="space-y-2"><Label>Min N (ppm)</Label><Input type="number" defaultValue={25} /></div>
-          <div className="space-y-2"><Label>Min Moisture (%)</Label><Input type="number" defaultValue={30} /></div>
-          <div className="space-y-2"><Label>Max Temp (°C)</Label><Input type="number" defaultValue={32} /></div>
-        </div>
-      </section>
+  const updateThreshold = (metric: MetricKey, bound: "min" | "max", value: string) => {
+    const numericValue = value === "" ? Number.NaN : Number(value);
+    setThresholds((current) => ({
+      ...current,
+      [metric]: { ...current[metric], [bound]: numericValue },
+    }));
+  };
 
-      <section className="bg-card border border-border rounded-xl shadow-card p-6 space-y-4">
-        <h2 className="font-semibold text-lg">Notifications</h2>
-        {[
-          ["Email alerts", "Receive critical alerts via email", true],
-          ["SMS alerts", "Text messages for critical issues", false],
-          ["Daily summary", "Morning report of all node activity", true],
-        ].map(([t, d, v]) => (
-          <div key={t as string} className="flex items-center justify-between py-2">
-            <div>
-              <p className="font-medium text-sm">{t}</p>
-              <p className="text-xs text-muted-foreground">{d}</p>
-            </div>
-            <Switch defaultChecked={v as boolean} />
+  const saveThresholds = () => {
+    const invalidMetric = METRICS.find(({ key }) => {
+      const { min, max } = thresholds[key];
+      return !Number.isFinite(min) || !Number.isFinite(max) || min >= max;
+    });
+
+    if (invalidMetric) {
+      toast.error(`${invalidMetric.label} needs a minimum lower than its maximum.`);
+      return;
+    }
+
+    saveAlertThresholds(thresholds);
+    toast.success("Alert thresholds saved. New node readings will be checked against them.");
+  };
+
+  const resetThresholds = () => {
+    setThresholds(DEFAULT_THRESHOLDS);
+    toast.message("Default values restored. Save to apply them.");
+  };
+
+  return (
+    <>
+      <PageHeader title="Settings" subtitle="Configure your account, alerts, and integrations" />
+      <div className="max-w-4xl space-y-6 p-6">
+        <section className="space-y-4 rounded-xl border border-border bg-card p-6 shadow-card">
+          <h2 className="text-lg font-semibold">Profile</h2>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="space-y-2"><Label>Full name</Label><Input defaultValue="Israel Durotoye" /></div>
+            <div className="space-y-2"><Label>Email</Label><Input defaultValue="israeldurotoye@gmail.com" /></div>
           </div>
-        ))}
-      </section>
+        </section>
 
-      <Button>Save changes</Button>
-    </div>
-  </>
-);
+        <section className="space-y-5 rounded-xl border border-border bg-card p-6 shadow-card">
+          <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-start">
+            <div>
+              <div className="flex items-center gap-2"><BellRing className="h-5 w-5 text-primary" /><h2 className="text-lg font-semibold">Alert thresholds</h2></div>
+              <p className="mt-1 text-sm text-muted-foreground">An alert is created whenever the latest reading for a node falls outside these limits.</p>
+            </div>
+            <Button variant="ghost" size="sm" onClick={resetThresholds}><RotateCcw className="mr-2 h-4 w-4" />Restore defaults</Button>
+          </div>
+
+          <div className="overflow-hidden rounded-lg border border-border">
+            <div className="grid grid-cols-[1fr_7rem_7rem] gap-3 bg-secondary/60 px-4 py-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground sm:grid-cols-[1fr_9rem_9rem]">
+              <span>Sensor reading</span><span>Minimum</span><span>Maximum</span>
+            </div>
+            {METRICS.map((metric) => (
+              <div key={metric.key} className="grid grid-cols-[1fr_7rem_7rem] items-center gap-3 border-t border-border px-4 py-3 sm:grid-cols-[1fr_9rem_9rem]">
+                <div><p className="text-sm font-medium">{metric.label}</p><p className="text-xs text-muted-foreground">{metric.unit}</p></div>
+                <Input aria-label={`Minimum ${metric.label}`} type="number" value={thresholds[metric.key].min} onChange={(event) => updateThreshold(metric.key, "min", event.target.value)} />
+                <Input aria-label={`Maximum ${metric.label}`} type="number" value={thresholds[metric.key].max} onChange={(event) => updateThreshold(metric.key, "max", event.target.value)} />
+              </div>
+            ))}
+          </div>
+
+          <div className="flex justify-end"><Button onClick={saveThresholds}><Save className="mr-2 h-4 w-4" />Save thresholds</Button></div>
+        </section>
+
+        <section className="space-y-4 rounded-xl border border-border bg-card p-6 shadow-card">
+          <h2 className="text-lg font-semibold">Notifications</h2>
+          {[
+            ["Laptop alerts", "Show threshold breaches in the Alerts page", "laptop"],
+            ["Email alerts", "Reserved for your Supabase notification workflow", "email"],
+            ["SMS alerts", "Reserved for your Supabase notification workflow", "sms"],
+          ].map(([title, description, key]) => (
+            <div key={key} className="flex items-center justify-between gap-4 py-2">
+              <div><p className="text-sm font-medium">{title}</p><p className="text-xs text-muted-foreground">{description}</p></div>
+              <Switch checked={notifications[key as keyof typeof notifications]} onCheckedChange={(checked) => setNotifications((current) => ({ ...current, [key]: checked }))} />
+            </div>
+          ))}
+        </section>
+      </div>
+    </>
+  );
+};
 
 export default Settings;

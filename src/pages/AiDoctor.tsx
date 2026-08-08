@@ -1,8 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useLocation } from "react-router-dom";
-import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Send, Bot, Sparkles, Leaf, Droplets, AlertTriangle } from "lucide-react";
+import { Send, Bot, Sparkles, Leaf, Droplets, AlertTriangle, Activity } from "lucide-react";
 import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 
@@ -22,20 +21,6 @@ const suggestions = [
   { icon: Droplets, text: "How should I adjust irrigation for NODE_04?" },
   { icon: AlertTriangle, text: "Diagnose recent alerts and suggest priorities" },
 ];
-
-const sampleResponse = `Based on telemetry across your **6 nodes**, here's my assessment:
-
-### 🌱 Soil Health Summary
-- **Average N:** 26 ppm — slightly below optimal (30+ ppm)
-- **Average P:** 46 ppm — within healthy range
-- **Average K:** 186 ppm — adequate
-
-### 🎯 Recommendations
-1. **Apply a balanced 20-10-10 NPK** to NODE_01 and NODE_06
-2. **Increase irrigation** on NODE_06 (moisture at 22%)
-3. **Inspect NODE_03** — offline for 3+ hours
-
-> Reach optimal yields by addressing nitrogen deficiency this week.`;
 
 const AiDoctor = () => {
   const [conversationId, setConversationId] = useState<string>(() => {
@@ -117,8 +102,7 @@ const AiDoctor = () => {
     const user_query = inputValue.trim();
     if (!user_query) return;
 
-    const history = messages;
-    const nextMessages = [...history, { role: 'user', content: user_query }];
+    const nextMessages = [...messages, { role: 'user', content: user_query }];
 
     // append user message immediately
     setMessages(nextMessages);
@@ -129,18 +113,25 @@ const AiDoctor = () => {
       const res = await fetch(`${API_BASE}/chat/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: user_query, history, conversation_id: conversationId }),
+        // The backend owns persisted context for this conversation. Sending the
+        // full UI transcript eventually exceeds its 50-message validation cap.
+        body: JSON.stringify({ query: user_query, conversation_id: conversationId }),
       });
 
       if (!res.ok) {
-        throw new Error(`Server responded ${res.status}`);
+        const errorBody = await res.json().catch(() => null);
+        const detail = typeof errorBody?.detail === "string"
+          ? errorBody.detail
+          : `Server responded ${res.status}`;
+        throw new Error(detail);
       }
 
       const data = await res.json();
       const answer = data?.answer ?? "";
       setMessages((m) => [...m, { role: 'assistant', content: answer }]);
     } catch (err) {
-      setMessages((m) => [...m, { role: 'assistant', content: "Sorry — the server is unreachable. Please try again later." }]);
+      const message = err instanceof Error ? err.message : "Unable to reach the server.";
+      setMessages((m) => [...m, { role: 'assistant', content: `Sorry — ${message}` }]);
     } finally {
       setIsLoading(false);
     }
@@ -150,8 +141,7 @@ const AiDoctor = () => {
     const user_query = text.trim();
     if (!user_query) return;
 
-    const history = messages;
-    const nextMessages = [...history, { role: 'user', content: user_query }];
+    const nextMessages = [...messages, { role: 'user', content: user_query }];
 
     setMessages(nextMessages);
     setIsLoading(true);
@@ -160,18 +150,23 @@ const AiDoctor = () => {
       const res = await fetch(`${API_BASE}/chat/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: user_query, history, conversation_id: conversationId }),
+        body: JSON.stringify({ query: user_query, conversation_id: conversationId }),
       });
 
       if (!res.ok) {
-        throw new Error(`Server responded ${res.status}`);
+        const errorBody = await res.json().catch(() => null);
+        const detail = typeof errorBody?.detail === "string"
+          ? errorBody.detail
+          : `Server responded ${res.status}`;
+        throw new Error(detail);
       }
 
       const data = await res.json();
       const answer = data?.answer ?? "";
       setMessages((m) => [...m, { role: 'assistant', content: answer }]);
     } catch (err) {
-      setMessages((m) => [...m, { role: 'assistant', content: "Sorry — the server is unreachable. Please try again later." }]);
+      const message = err instanceof Error ? err.message : "Unable to reach the server.";
+      setMessages((m) => [...m, { role: 'assistant', content: `Sorry — ${message}` }]);
     } finally {
       setIsLoading(false);
     }
@@ -187,29 +182,59 @@ const AiDoctor = () => {
     }
   }, [location]);
 
+  const isWelcomeState = !messages.some((message) => message.role === "user");
+  const visibleMessages = messages.filter(
+    (message, index) => !(isWelcomeState && index === 0 && message.role === "assistant"),
+  );
+
   return (
-    <div className="flex flex-col h-[calc(100vh-8.5rem)]">
-      <PageHeader title="AI Soil Doctor" subtitle="Your intelligent farming companion" />
-      <div className="flex-1 flex flex-col max-w-4xl w-full mx-auto px-4 sm:px-6 py-4 min-h-0">
-        <div className="flex-1 overflow-y-auto space-y-5 py-4">
-          {messages.map((m, i) => (
-            <div key={i} className={cn("flex gap-3 animate-float-in", m.role === "user" ? "justify-end" : "justify-start")}>
+    <div className="flex h-[calc(100vh-6rem)] min-h-[540px] flex-col">
+      <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 sm:px-6 min-h-0">
+        <div className="flex items-center justify-between border-b border-border/60 py-3">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+              <Bot className="h-4 w-4" />
+            </div>
+            Soil Doctor
+          </div>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="h-2 w-2 rounded-full bg-primary" />
+            Farm context active
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto py-8 sm:py-10">
+          {isWelcomeState && (
+            <div className="mx-auto flex max-w-2xl flex-col items-center pb-10 pt-4 text-center animate-float-in">
+              <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-glow">
+                <Sparkles className="h-7 w-7" />
+              </div>
+              <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">How can I help with your farm?</h1>
+              <p className="mt-3 max-w-lg text-sm leading-6 text-muted-foreground sm:text-base">
+                I use your latest node readings to turn farm data into clear, practical guidance.
+              </p>
+            </div>
+          )}
+
+          <div className="mx-auto max-w-3xl space-y-8">
+          {visibleMessages.map((m, i) => (
+            <div key={i} className={cn("flex gap-3 sm:gap-4 animate-float-in", m.role === "user" ? "justify-end" : "justify-start")}>
               {m.role === "assistant" && (
-                <div className="h-9 w-9 rounded-full gradient-primary flex items-center justify-center shrink-0 shadow-glow">
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                   <Bot className="h-4 w-4 text-primary-foreground" />
                 </div>
               )}
               <div className={cn(
-                "max-w-[78%] rounded-3xl px-5 py-4 shadow-sm backdrop-blur-md transition-all duration-300",
+                "max-w-[82%] text-[15px] leading-7",
                 m.role === "user"
-                  ? "bg-primary/90 text-primary-foreground rounded-br-md shadow-glow border border-primary/50"
-                  : "glass-card rounded-bl-md"
+                  ? "rounded-3xl rounded-br-lg bg-primary px-5 py-3 text-primary-foreground shadow-sm"
+                  : "px-1 py-0.5 text-foreground"
               )}>
                 <div className={cn(
                   "prose prose-sm max-w-none",
                   m.role === "user"
                     ? "prose-invert prose-p:text-primary-foreground"
-                    : "prose-headings:text-foreground prose-p:text-foreground/90 prose-strong:text-foreground prose-li:text-foreground/90 prose-blockquote:text-muted-foreground prose-blockquote:border-l-primary"
+                    : "prose-headings:mt-0 prose-headings:text-foreground prose-p:text-foreground/90 prose-strong:text-foreground prose-li:text-foreground/90 prose-blockquote:text-muted-foreground prose-blockquote:border-l-primary"
                 )}>
                   {m.role === 'assistant' ? (
                     <ReactMarkdown>{m.content}</ReactMarkdown>
@@ -219,18 +244,18 @@ const AiDoctor = () => {
                 </div>
               </div>
               {m.role === "user" && (
-                <div className="h-9 w-9 rounded-full bg-primary/20 border border-primary/50 flex items-center justify-center shrink-0 text-xs font-semibold text-primary">
-                  ID
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-xs font-semibold text-secondary-foreground">
+                  You
                 </div>
               )}
             </div>
           ))}
           {isLoading && (
             <div className="flex gap-3 animate-float-in">
-              <div className="h-9 w-9 rounded-full gradient-primary flex items-center justify-center shrink-0 shadow-glow">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
                 <Bot className="h-4 w-4 text-primary-foreground" />
               </div>
-              <div className="glass-card rounded-3xl rounded-bl-md px-5 py-4 flex gap-1.5 items-center">
+              <div className="flex h-9 items-center gap-1.5 px-1">
                 <span className="h-2 w-2 rounded-full bg-primary/60 animate-pulse" style={{ animationDelay: "0ms" }} />
                 <span className="h-2 w-2 rounded-full bg-primary/60 animate-pulse" style={{ animationDelay: "150ms" }} />
                 <span className="h-2 w-2 rounded-full bg-primary/60 animate-pulse" style={{ animationDelay: "300ms" }} />
@@ -238,41 +263,43 @@ const AiDoctor = () => {
             </div>
           )}
           {isLoading && (
-            <div className="text-sm text-muted-foreground text-center mt-2">The Soil Doctor is thinking...</div>
+            <div className="ml-12 text-xs text-muted-foreground">Checking the farm context…</div>
           )}
           <div ref={endRef} />
+          </div>
         </div>
 
-        {messages.length <= 1 && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
+        {isWelcomeState && (
+          <div className="mx-auto grid w-full max-w-3xl grid-cols-1 gap-2 pb-4 sm:grid-cols-3">
               {suggestions.map((s, i) => (
                 <button key={i} onClick={() => sendText(s.text)}
-                  className="text-left p-4 glass-card rounded-2xl hover:border-primary/50 hover:shadow-glow hover:-translate-y-1 transition-all duration-300 flex items-start gap-3 group">
-                <s.icon className="h-5 w-5 text-primary mt-0.5 shrink-0 group-hover:scale-110 transition-transform duration-300" />
-                <span className="text-sm font-medium text-foreground/90 group-hover:text-primary transition-colors">{s.text}</span>
+                  className="group flex min-h-24 items-start gap-3 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:bg-secondary/60">
+                <s.icon className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+                <span className="text-sm font-medium leading-5 text-foreground/90">{s.text}</span>
               </button>
             ))}
           </div>
         )}
 
-        <form onSubmit={handleSendMessage} className="glass-panel rounded-3xl p-3 flex items-end gap-3 mt-2">
-          <Sparkles className="h-6 w-6 text-primary ml-3 mb-3 animate-pulse" />
+        <div className="mx-auto w-full max-w-3xl pb-3">
+        <form onSubmit={handleSendMessage} className="flex items-end gap-2 rounded-3xl border border-border bg-card p-2 shadow-elevated focus-within:border-primary/60">
           <textarea
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
-            placeholder="Ask the Soil Doctor anything..."
+            placeholder="Message Soil Doctor…"
             rows={1}
             disabled={isLoading}
-            className="flex-1 resize-none bg-transparent px-3 py-3 text-[15px] focus:outline-none max-h-32 placeholder:text-muted-foreground/70"
+            className="max-h-32 flex-1 resize-none bg-transparent px-3 py-2.5 text-[15px] leading-6 focus:outline-none placeholder:text-muted-foreground"
           />
-          <Button type="submit" size="icon" disabled={!inputValue.trim() || isLoading} className="shrink-0 h-12 w-12 rounded-2xl bg-primary hover:bg-primary/90 text-primary-foreground transition-all duration-300 hover:shadow-glow hover:-translate-y-0.5">
-            <Send className="h-5 w-5" />
+          <Button type="submit" size="icon" disabled={!inputValue.trim() || isLoading} className="h-10 w-10 shrink-0 rounded-2xl bg-primary text-primary-foreground hover:bg-primary/90">
+            <Send className="h-4 w-4" />
           </Button>
         </form>
-        <p className="text-[11px] text-muted-foreground text-center mt-4 tracking-wide uppercase">
-          AI guidance is advisory. Always verify with agronomic best practices.
+        <p className="mt-3 flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
+          <Activity className="h-3 w-3" /> Live node context is used when available. Verify important decisions in the field.
         </p>
+        </div>
       </div>
     </div>
   );
