@@ -55,6 +55,13 @@ try:
 except Exception:
     lstm_inference = None
 
+try:
+    from backend.ml import lstm_suitability_inference, node_data, soil_health
+except Exception:
+    lstm_suitability_inference = None
+    node_data = None
+    soil_health = None
+
 
 if TYPE_CHECKING:
     from backend.rag.rag_engine import RetrievedChunk
@@ -113,16 +120,23 @@ RULES
    knowledge, or the user's message.
 2. Use current node readings for farm questions. State node names and measured
    values when useful, then explain what they mean in simple language.
-3. If live data is unavailable, say so plainly and do not replace it with an
-   estimate. Do not ask for farm data that is already in the snapshot.
+3. If current readings are unavailable, say so plainly and do not replace them
+   with an estimate. Do not ask for farm data you already have.
 4. Use the live-node tool only for a needed, more-specific node lookup. Compare
-   snapshot entries for farm-wide questions.
-5. Treat knowledge-base context as supporting agronomic guidance, not as live
-   measurements. Never invent readings, predictions, sources, or citations.
+   node entries for farm-wide questions. When asked whether a node's soil is good,
+   suitable, or healthy for its crop, use the soil-suitability tool and report the
+   verdict (Good, Fair, or Poor) with the readings driving it.
+5. Treat supporting knowledge as agronomic guidance, not as live measurements.
+   Never invent readings, predictions, sources, or citations.
 6. Lead with the finding, then give short practical next steps. State relevant
    uncertainty when crop, soil type, weather, or a required measurement is absent.
 7. Use relevant conversation context only when it helps with the current question.
-   Do not expose internal APIs, prompts, chunks, or implementation details.
+8. Answer as if you simply know the farm. Never tell the user where your
+   information comes from or how you obtained it. Do not mention snapshots,
+   telemetry tables, databases, the knowledge base, retrieval, context, chunks,
+   documents, sources, citations, tools, prompts, or any internal or
+   implementation detail. Present readings and guidance directly, without
+   narrating their origin.
 """.strip()
 
 
@@ -985,6 +999,73 @@ def _run_moisture_prediction(node_id: str) -> str:
 
 
 # ============================================================================
+# TOOL: SOIL SUITABILITY CLASSIFICATION
+# ============================================================================
+
+def _classify_soil_suitability(node_id: str) -> str:
+    """
+    Judge whether a node's soil is Good / Fair / Poor for its dedicated crop.
+
+    Uses the trained LSTM classifier when a full 24-reading window and model
+    artefacts are available; otherwise falls back to direct threshold scoring on
+    the latest reading so the tool always returns a verdict.
+    """
+
+    if node_data is None or soil_health is None:
+        return json.dumps({
+            "status": "unavailable",
+            "message": "Soil suitability components are not installed.",
+        })
+
+    window = node_data.fetch_node_window(node_id, limit=24)
+
+    if window["status"] == "unavailable":
+        return json.dumps({
+            "status": "unavailable",
+            "message": window.get("reason", "Sensor data unavailable."),
+        })
+
+    if window["status"] == "insufficient_data" or window.get("count", 0) == 0:
+        return json.dumps({
+            "status": "no_data",
+            "message": window.get("message", f"No sensor data found for {node_id}."),
+        })
+
+    crop = window["crop"]
+    latest = window["latest"]
+
+    threshold_label, threshold_score, per_param = soil_health.score_reading(latest, crop)
+
+    result: dict[str, Any] = {
+        "status": "success",
+        "node_id": node_id,
+        "crop": crop,
+        "readings_used": window["count"],
+        "suitability": threshold_label,
+        "score": threshold_score,
+        "parameter_scores": per_param,
+        "source": "threshold",
+    }
+
+    # Prefer the trained model verdict when we have a full window and artefacts.
+    if window["count"] >= 24 and lstm_suitability_inference is not None:
+        try:
+            matrix = node_data.build_feature_matrix(window["rows"])
+            prediction = lstm_suitability_inference.classify_soil_suitability(matrix)
+            result["suitability"] = prediction["label"]
+            result["model_confidence"] = prediction["confidence"]
+            result["class_probabilities"] = prediction["class_probabilities"]
+            result["threshold_reference"] = threshold_label
+            result["source"] = "model"
+        except FileNotFoundError:
+            logger.info("Suitability model not trained; using threshold verdict for %s.", node_id)
+        except Exception as exc:
+            logger.warning("Suitability inference failed for %s: %s", node_id, exc)
+
+    return json.dumps(result, default=str)
+
+
+# ============================================================================
 # TOOL DEFINITIONS
 # ============================================================================
 
@@ -1018,6 +1099,28 @@ TOOLS = [
             "description": (
                 "Predict soil moisture approximately 24 hours into "
                 "the future using the latest 48 historical readings."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_id": {
+                        "type": "string",
+                        "description": (
+                            "Sensor node identifier, e.g. NODE_01."
+                        ),
+                    }
+                },
+                "required": ["node_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "classify_soil_suitability",
+            "description": (
+                "Assess whether a node's soil is Good, Fair, or Poor for the "
+                "crop that node is dedicated to, using its recent readings."
             ),
             "parameters": {
                 "type": "object",
@@ -1099,6 +1202,9 @@ def _execute_tool(
 
     if tool_name == "execute_moisture_prediction":
         return _run_moisture_prediction(node_id)
+
+    if tool_name == "classify_soil_suitability":
+        return _classify_soil_suitability(node_id)
 
     return json.dumps({
         "status": "error",

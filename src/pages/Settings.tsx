@@ -14,10 +14,21 @@ import {
   loadAlertThresholds,
   saveAlertThresholds,
 } from "@/lib/alerting";
+import { UserProfile, loadUserProfile, saveUserProfile } from "@/lib/profile";
 
 const Settings = () => {
   const [thresholds, setThresholds] = useState<AlertThresholds>(loadAlertThresholds);
   const [notifications, setNotifications] = useState({ laptop: true, email: false, sms: false });
+  const [profile, setProfile] = useState<UserProfile>(loadUserProfile);
+
+  const saveProfile = () => {
+    if (!profile.name.trim() || !profile.role.trim()) {
+      toast.error("Add both a name and role before saving your profile.");
+      return;
+    }
+    saveUserProfile({ ...profile, name: profile.name.trim(), role: profile.role.trim(), email: profile.email.trim() });
+    toast.success("Profile updated.");
+  };
 
   const updateThreshold = (metric: MetricKey, bound: "min" | "max", value: string) => {
     const numericValue = value === "" ? Number.NaN : Number(value);
@@ -52,11 +63,13 @@ const Settings = () => {
       <PageHeader title="Settings" subtitle="Configure your account, alerts, and integrations" />
       <div className="max-w-4xl space-y-6 p-6">
         <section className="space-y-4 rounded-xl border border-border bg-card p-6 shadow-card">
-          <h2 className="text-lg font-semibold">Profile</h2>
+          <div><h2 className="text-lg font-semibold">Profile</h2><p className="mt-1 text-sm text-muted-foreground">This name and role appear in the collapsible account control at the bottom-left of the app.</p></div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="space-y-2"><Label>Full name</Label><Input defaultValue="Israel Durotoye" /></div>
-            <div className="space-y-2"><Label>Email</Label><Input defaultValue="israeldurotoye@gmail.com" /></div>
+            <div className="space-y-2"><Label htmlFor="profile-name">Full name</Label><Input id="profile-name" value={profile.name} onChange={(event) => setProfile((current) => ({ ...current, name: event.target.value }))} /></div>
+            <div className="space-y-2"><Label htmlFor="profile-role">Role</Label><Input id="profile-role" value={profile.role} onChange={(event) => setProfile((current) => ({ ...current, role: event.target.value }))} /></div>
+            <div className="space-y-2 sm:col-span-2"><Label htmlFor="profile-email">Email</Label><Input id="profile-email" type="email" value={profile.email} onChange={(event) => setProfile((current) => ({ ...current, email: event.target.value }))} /></div>
           </div>
+          <div className="flex justify-end"><Button onClick={saveProfile}><Save className="mr-2 h-4 w-4" />Save profile</Button></div>
         </section>
 
         <section className="space-y-5 rounded-xl border border-border bg-card p-6 shadow-card">

@@ -1,44 +1,48 @@
 import { NavLink } from "react-router-dom";
-import { Settings, LogOut } from "lucide-react";
+import { ChevronRight, LogOut, Settings } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
+import { useEffect, useState } from "react";
+import { loadUserProfile, profileInitials } from "@/lib/profile";
 
 export const FloatingControls = () => {
+  const [expanded, setExpanded] = useState(false);
+  const [profile, setProfile] = useState(loadUserProfile);
+
+  useEffect(() => {
+    const updateProfile = () => setProfile(loadUserProfile());
+    window.addEventListener("soilnet:profile-updated", updateProfile);
+    return () => window.removeEventListener("soilnet:profile-updated", updateProfile);
+  }, []);
+
   return (
     <div className="fixed bottom-6 left-6 z-50">
-      <div className="glass-card bg-background/60 backdrop-blur-md border border-white/10 rounded-full py-2 px-3 flex items-center gap-3 shadow-lg hover:shadow-glow transition-all duration-300">
-        <NavLink
-          to="/settings"
-          className="h-8 w-8 flex items-center justify-center rounded-full bg-transparent hover:bg-white/10 text-foreground/60 hover:text-primary transition-all group"
-          title="Settings"
-        >
-          <Settings className="h-4 w-4 group-hover:rotate-45 transition-transform duration-300" />
-        </NavLink>
+      <div className="flex items-center rounded-full border border-border/80 bg-background/90 p-1.5 shadow-lg backdrop-blur-md transition-all duration-300">
+        {expanded && (
+          <>
+            <NavLink to="/settings" className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-secondary hover:text-primary" title="Settings" aria-label="Settings">
+              <Settings className="h-4 w-4" />
+            </NavLink>
+            <div className="mx-1 h-6 w-px bg-border" />
+          </>
+        )}
 
-        <div className="w-[1px] h-6 bg-white/10"></div>
-
-        <div className="flex items-center gap-2 px-1">
-          <div className="h-7 w-7 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center text-[10px] font-mono font-bold text-primary">
-            ID
+        <button onClick={() => setExpanded((value) => !value)} className="flex items-center gap-2 rounded-full px-1.5 py-1 text-left" aria-expanded={expanded} aria-label={expanded ? "Collapse account controls" : "Expand account controls"}>
+          <div className="flex h-9 w-9 items-center justify-center rounded-full border border-primary/30 bg-primary/15 text-[10px] font-mono font-bold text-primary">
+            {profileInitials(profile.name)}
           </div>
-          <div className="pr-1">
-            <p className="text-[10px] font-bold font-sans text-foreground leading-tight uppercase tracking-wider">Israel Durotoye</p>
-            <p className="text-[9px] font-mono text-muted-foreground uppercase tracking-widest">Road manager</p>
-          </div>
-        </div>
-
-        <div className="w-[1px] h-6 bg-white/10"></div>
-
-        <button
-          onClick={async () => {
-            await supabase.auth.signOut();
-            toast.success("Logged out successfully");
-          }}
-          className="h-8 w-8 flex items-center justify-center rounded-full bg-transparent hover:bg-white/10 text-foreground/60 hover:text-destructive transition-all group"
-          title="Log Out"
-        >
-          <LogOut className="h-4 w-4 group-hover:translate-x-0.5 transition-transform duration-300" />
+          {expanded && <div className="max-w-44 pr-1"><p className="truncate text-[10px] font-bold uppercase tracking-wider text-foreground">{profile.name}</p><p className="truncate text-[9px] font-mono uppercase tracking-widest text-muted-foreground">{profile.role}</p></div>}
+          <ChevronRight className={`h-4 w-4 text-muted-foreground transition-transform ${expanded ? "rotate-180" : ""}`} />
         </button>
+
+        {expanded && (
+          <>
+            <div className="mx-1 h-6 w-px bg-border" />
+            <button onClick={async () => { await supabase.auth.signOut(); toast.success("Logged out successfully"); }} className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive" title="Log out" aria-label="Log out">
+              <LogOut className="h-4 w-4" />
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

@@ -5,3 +5,10 @@ pydantic>=1.10
 xgboost>=1.7
 chromadb>=0.4
 rank_bm25>=0.2
+# ML pipeline (LSTM suitability + moisture + anomaly models)
+keras>=3.0
+torch>=2.0
+scikit-learn>=1.3
+joblib>=1.3
+numpy>=1.24
+supabase>=2.0
