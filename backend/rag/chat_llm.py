@@ -49,6 +49,7 @@ except ImportError:
     create_client = None
 
 from backend.rag import diagnostics, prescriptions
+from backend.utils.season import get_nigerian_season
 
 try:
     from backend.ml import lstm_inference
@@ -777,7 +778,7 @@ def _get_farm_snapshot() -> dict[str, Any]:
                     "node_id": node_id,
                     "timestamp_utc": row.get("Timestamp"),
                     "target_crop": row.get("Target_Crop"),
-                    "season": row.get("Season"),
+                    "season": get_nigerian_season(row.get("Timestamp")),
                     "nitrogen_mg_kg": row.get("Nitrogen_mg_k"),
                     "phosphorus_mg_kg": row.get("Phosphorus_m"),
                     "potassium_mg_kg": row.get("Potassium_mg_"),

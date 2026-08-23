@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { getNigerianSeason } from "@/lib/season";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { MetricCard } from "@/components/MetricCard";
 import { MapPreview } from "@/components/MapPreview";
@@ -103,7 +104,7 @@ const Dashboard = () => {
 
   return (
     <>
-      <PageHeader title="Dashboard" subtitle="Real-time field intelligence across all nodes" />
+      <PageHeader title="Dashboard" subtitle="Your farm at a glance" />
       <div className="p-6 space-y-6">
         {/* Top metrics — computed from Supabase rows */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -120,14 +121,14 @@ const Dashboard = () => {
             </div>
             <div className="flex-1">
               <h2 className="text-lg font-semibold flex items-center gap-2">
-                Node Status
+                Field Report
                 {selected && (
                   <span className="text-xs bg-primary/20 text-primary px-2 py-0.5 rounded-full font-mono">{selected}</span>
                 )}
               </h2>
               <div className="mt-2 text-muted-foreground text-sm leading-relaxed">
                 {statusLoading ? (
-                  <span className="animate-pulse">Analyzing latest telemetry...</span>
+                  <span className="animate-pulse">Checking your field...</span>
                 ) : (
                   <span>{statusMessage || "Select a node to view its status."}</span>
                 )}
@@ -140,8 +141,8 @@ const Dashboard = () => {
         <section className="bg-card border border-border rounded-xl shadow-card overflow-hidden">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-5 border-b border-border">
             <div>
-              <h2 className="text-lg font-semibold">Node Parameters</h2>
-              <p className="text-sm text-muted-foreground">Live readings · {node?.Target_Crop ?? "-"} — {node?.Season ?? "-"}</p>
+              <h2 className="text-lg font-semibold">Sensor Readings</h2>
+              <p className="text-sm text-muted-foreground">Live readings · {node?.Target_Crop ?? "-"} — {getNigerianSeason(node?.Timestamp)}</p>
             </div>
             <div className="flex flex-wrap gap-2">
               {latestNodes.map((n) => (
@@ -175,8 +176,8 @@ const Dashboard = () => {
         {/* Historical Trends */}
         <section>
           <div className="mb-4">
-            <h2 className="text-lg font-semibold">Historical Trends</h2>
-            <p className="text-sm text-muted-foreground">Recent telemetry variations for {selected}</p>
+            <h2 className="text-lg font-semibold">Trends</h2>
+            <p className="text-sm text-muted-foreground">How readings have changed over time</p>
           </div>
           <TrendCharts rows={rows} selectedId={selected} />
         </section>
@@ -185,8 +186,8 @@ const Dashboard = () => {
         <section className="bg-card border border-border rounded-xl shadow-card p-5">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h2 className="text-lg font-semibold">Field Map</h2>
-              <p className="text-sm text-muted-foreground">Live node locations — click a marker to inspect</p>
+              <h2 className="text-lg font-semibold">Farm Map</h2>
+              <p className="text-sm text-muted-foreground">Your sensor locations</p>
             </div>
           </div>
           {loading ? (

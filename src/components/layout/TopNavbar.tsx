@@ -14,7 +14,7 @@ const navItems = [
   { to: "/map", label: "Map View", icon: Map },
   { to: "/data", label: "Data Table", icon: Table2 },
   { to: "/alerts", label: "Alerts", icon: AlertTriangle },
-  { to: "/ai-doctor", label: "AI Soil Doctor", icon: Bot },
+  { to: "/ai-doctor", label: "Soil Doctor", icon: Bot },
 ];
 
 export const TopNavbar = () => {
@@ -97,7 +97,7 @@ export const TopNavbar = () => {
                 <span>{item.label}</span>
               </NavLink>
             );
-          })
+          })}
           
           <div className="h-px w-full bg-border my-2" />
           

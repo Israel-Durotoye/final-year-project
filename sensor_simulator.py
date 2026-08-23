@@ -4,6 +4,7 @@ import random
 from datetime import datetime
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from backend.utils.season import get_nigerian_season
 
 # Load environment variables
 load_dotenv()
@@ -64,7 +65,7 @@ try:
                 "Longitude": config["lng"],
                 "Altitude_m": round(random.uniform(295.0, 305.0), 1),
                 "Satellites": random.choice([4, 5, 6, 7, 8, "ERR"]),
-                "Season": "Dry",
+                "Season": get_nigerian_season(),
                 "Target_Crop": config["crop"]
             }
             

@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/layout/PageHeader";
+import { getNigerianSeason } from "@/lib/season";
 import { Server, AlertTriangle, TrendingUp, Radio, Leaf, FlaskConical, Sprout, Droplets, Waves, Thermometer, Stethoscope, FlaskRound, LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -143,13 +144,13 @@ const Nodes = () => {
 
   return (
     <>
-      <PageHeader title="Nodes" subtitle={`${totalNodes} sensor nodes deployed`} />
+      <PageHeader title="Nodes" subtitle={`${totalNodes} sensors on your farm`} />
 
       <div className="p-6 space-y-6">
         {/* Top stats */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <StatCard icon={Server} label="Total Nodes" value={totalNodes} />
-          <StatCard icon={AlertTriangle} label="Nodes Requiring Attention" value={attention} tone="warning" />
+          <StatCard icon={AlertTriangle} label="Needs Attention" value={attention} tone="warning" />
           <StatCard icon={TrendingUp} label="Avg Farm Yield Forecast" value={`${yieldForecast}%`} tone="primary" />
         </div>
 
@@ -172,7 +173,7 @@ const Nodes = () => {
                     </div>
                     <div>
                       <h3 className="font-bold tracking-tight text-base">{n.Node_ID}</h3>
-                      <p className="text-xs text-muted-foreground">{n.Target_Crop ?? "-"} · {n.Season ?? "-"}</p>
+                      <p className="text-xs text-muted-foreground">{n.Target_Crop ?? "-"} · {getNigerianSeason(n.Timestamp)}</p>
                     </div>
                   </div>
                   <span className={cn("inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider", status === "OFFLINE" ? "bg-muted text-muted-foreground" : t.badgeBg, status === "OFFLINE" ? "text-muted-foreground" : t.badgeText)}>

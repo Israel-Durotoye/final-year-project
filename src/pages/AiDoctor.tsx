@@ -1,308 +1,284 @@
-import { useState, useRef, useEffect } from "react";
-import { useLocation } from "react-router-dom";
+import { useState, useEffect } from "react";
+import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Send, Bot, Sparkles, Leaf, Droplets, AlertTriangle, Activity } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Leaf, Droplets, Sparkles, MessageCircleQuestion, ChevronRight, Activity, RotateCcw } from "lucide-react";
+import { createClient } from "@supabase/supabase-js";
 import ReactMarkdown from "react-markdown";
+import { cn } from "@/lib/utils";
+import { SoilDoctorCharts } from "@/components/SoilDoctorCharts";
 
-interface Msg { role: "user" | "assistant"; content: string; }
-
-const LOCAL_STORAGE_KEY = "soil-doctor-conversation";
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || (process.env.VITE_SUPABASE_URL as string) || "";
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || (process.env.VITE_SUPABASE_ANON_KEY as string) || "";
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-const defaultAssistantMessage: Msg = {
-  role: "assistant",
-  content:
-    "👋 Hello! I'm your AI Soil Doctor. Ask me anything about your fields, soil chemistry, or crop health.",
-};
+type ActionType = "view" | "analyse" | "recommend" | "ask" | null;
 
-const suggestions = [
-  { icon: Leaf, text: "Which crops suit my current N-P-K levels?" },
-  { icon: Droplets, text: "How should I adjust irrigation for NODE_04?" },
-  { icon: AlertTriangle, text: "Diagnose recent alerts and suggest priorities" },
-];
+const ACTIONS = [
+  { id: "view", title: "View Sensor Readings", description: "Get a summary of the current conditions on a specific farm section.", icon: Activity },
+  { id: "analyse", title: "Analyse Conditions", description: "Understand what the current soil health means for your crops.", icon: Leaf },
+  { id: "recommend", title: "Get Recommendations", description: "Receive practical steps to improve soil and crop health.", icon: Droplets },
+  { id: "ask", title: "Ask a Question", description: "Ask anything else about your farm or the sensor data.", icon: MessageCircleQuestion },
+] as const;
 
-const AiDoctor = () => {
-  const [conversationId, setConversationId] = useState<string>(() => {
-    if (typeof window === "undefined") {
-      return `conv-${Date.now()}`;
-    }
+const SoilDoctor = () => {
+  const [nodes, setNodes] = useState<string[]>([]);
+  const [loadingNodes, setLoadingNodes] = useState(true);
 
-    try {
-      const stored = window.localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (!stored) {
-        return window.crypto?.randomUUID?.() ?? `conv-${Date.now()}`;
-      }
+  const [step, setStep] = useState<"action" | "node" | "question" | "result">("action");
+  const [selectedAction, setSelectedAction] = useState<ActionType>(null);
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
+  const [customQuestion, setCustomQuestion] = useState("");
+  
+  const [loadingResult, setLoadingResult] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
 
-      const parsed = JSON.parse(stored);
-      return parsed?.conversationId ?? window.crypto?.randomUUID?.() ?? `conv-${Date.now()}`;
-    } catch {
-      return window.crypto?.randomUUID?.() ?? `conv-${Date.now()}`;
-    }
-  });
-
-  const [messages, setMessages] = useState<Msg[]>(() => {
-    if (typeof window === "undefined") {
-      return [defaultAssistantMessage];
-    }
-
-    try {
-      const stored = window.localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (!stored) return [defaultAssistantMessage];
-
-      const parsed = JSON.parse(stored);
-      return Array.isArray(parsed?.messages) && parsed.messages.length > 0
-        ? parsed.messages
-        : [defaultAssistantMessage];
-    } catch {
-      return [defaultAssistantMessage];
-    }
-  });
-
-  const [inputValue, setInputValue] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const endRef = useRef<HTMLDivElement>(null);
-  const location = useLocation();
-  const hasAutoFired = useRef(false);
-
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, isLoading]);
-
+  // Load nodes for selection
   useEffect(() => {
-    if (!conversationId) return;
-
-    const syncHistory = async () => {
+    const fetchNodes = async () => {
       try {
-        const res = await fetch(`${API_BASE}/chat/history/${conversationId}`);
-        if (!res.ok) {
-          return;
-        }
-
-        const data = await res.json();
-        if (Array.isArray(data?.messages) && data.messages.length > messages.length) {
-          setMessages(data.messages);
-        }
-      } catch {
-        // Server history is best-effort; continue with local cache.
+        const { data, error } = await supabase
+          .from("capstone_dataset")
+          .select("Node_ID")
+          .order("Timestamp", { ascending: false })
+          .limit(200);
+        
+        if (error) throw error;
+        
+        const uniqueNodes = Array.from(new Set((data || []).map(r => r.Node_ID))).sort();
+        setNodes(uniqueNodes);
+      } catch (err) {
+        console.error("Failed to load nodes", err);
+      } finally {
+        setLoadingNodes(false);
       }
     };
+    fetchNodes();
+  }, []);
 
-    void syncHistory();
-  }, [conversationId]);
+  const handleActionSelect = (actionId: ActionType) => {
+    setSelectedAction(actionId);
+    if (actionId === "ask") {
+      setStep("question");
+    } else {
+      setStep("node");
+    }
+  };
 
-  useEffect(() => {
-    if (!conversationId) return;
-    window.localStorage.setItem(
-      LOCAL_STORAGE_KEY,
-      JSON.stringify({ conversationId, messages }),
-    );
-  }, [conversationId, messages]);
-
-  const handleSendMessage = async (e?: any) => {
-    if (e) e.preventDefault();
-    const user_query = inputValue.trim();
-    if (!user_query) return;
-
-    const nextMessages = [...messages, { role: 'user', content: user_query }];
-
-    // append user message immediately
-    setMessages(nextMessages);
-    setInputValue("");
-    setIsLoading(true);
+  const executeAnalysis = async (query: string) => {
+    setStep("result");
+    setLoadingResult(true);
+    setResult(null);
 
     try {
       const res = await fetch(`${API_BASE}/chat/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // The backend owns persisted context for this conversation. Sending the
-        // full UI transcript eventually exceeds its 50-message validation cap.
-        body: JSON.stringify({ query: user_query, conversation_id: conversationId }),
+        body: JSON.stringify({ query }),
       });
 
-      if (!res.ok) {
-        const errorBody = await res.json().catch(() => null);
-        const detail = typeof errorBody?.detail === "string"
-          ? errorBody.detail
-          : `Server responded ${res.status}`;
-        throw new Error(detail);
-      }
+      if (!res.ok) throw new Error("Failed to get analysis");
 
       const data = await res.json();
-      const answer = data?.answer ?? "";
-      setMessages((m) => [...m, { role: 'assistant', content: answer }]);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to reach the server.";
-      setMessages((m) => [...m, { role: 'assistant', content: `Sorry — ${message}` }]);
+      setResult(data?.answer ?? "No analysis returned.");
+    } catch (err: any) {
+      setResult(`Sorry, we couldn't complete the analysis right now. (${err.message || "Connection error"})`);
     } finally {
-      setIsLoading(false);
+      setLoadingResult(false);
     }
   };
 
-  const sendText = async (text: string) => {
-    const user_query = text.trim();
-    if (!user_query) return;
-
-    const nextMessages = [...messages, { role: 'user', content: user_query }];
-
-    setMessages(nextMessages);
-    setIsLoading(true);
-
-    try {
-      const res = await fetch(`${API_BASE}/chat/`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: user_query, conversation_id: conversationId }),
-      });
-
-      if (!res.ok) {
-        const errorBody = await res.json().catch(() => null);
-        const detail = typeof errorBody?.detail === "string"
-          ? errorBody.detail
-          : `Server responded ${res.status}`;
-        throw new Error(detail);
-      }
-
-      const data = await res.json();
-      const answer = data?.answer ?? "";
-      setMessages((m) => [...m, { role: 'assistant', content: answer }]);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to reach the server.";
-      setMessages((m) => [...m, { role: 'assistant', content: `Sorry — ${message}` }]);
-    } finally {
-      setIsLoading(false);
+  const handleNodeSelect = (nodeId: string) => {
+    setSelectedNode(nodeId);
+    
+    if (selectedAction === "view") {
+      setStep("result");
+      return;
     }
+    
+    let query = "";
+    if (selectedAction === "analyse") {
+      query = `Please analyse the current soil conditions for ${nodeId}. Explain what the levels mean for the health of the field in simple terms.`;
+    } else if (selectedAction === "recommend") {
+      query = `Based on the latest data for ${nodeId}, what practical recommendations and steps should be taken to improve conditions?`;
+    }
+    executeAnalysis(query);
   };
 
-  // If this page was opened with an `autoQuery` in router state, send it once on mount.
-  useEffect(() => {
-    const auto = (location as any)?.state?.autoQuery;
-    if (auto && !hasAutoFired.current) {
-      hasAutoFired.current = true;
-      // call sendText but do not await to avoid blocking render
-      void sendText(auto);
-    }
-  }, [location]);
+  const handleQuestionSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!customQuestion.trim()) return;
+    executeAnalysis(customQuestion.trim());
+  };
 
-  const isWelcomeState = !messages.some((message) => message.role === "user");
-  const visibleMessages = messages.filter(
-    (message, index) => !(isWelcomeState && index === 0 && message.role === "assistant"),
-  );
+  const reset = () => {
+    setStep("action");
+    setSelectedAction(null);
+    setSelectedNode(null);
+    setCustomQuestion("");
+    setResult(null);
+  };
 
   return (
-    <div className="flex h-[calc(100vh-6rem)] min-h-[540px] flex-col">
-      <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col px-4 sm:px-6 min-h-0">
-        <div className="flex items-center justify-between border-b border-border/60 py-3">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <Bot className="h-4 w-4" />
-            </div>
-            Soil Doctor
-          </div>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="h-2 w-2 rounded-full bg-primary" />
-            Farm context active
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto py-8 sm:py-10">
-          {isWelcomeState && (
-            <div className="mx-auto flex max-w-2xl flex-col items-center pb-10 pt-4 text-center animate-float-in">
-              <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-glow">
-                <Sparkles className="h-7 w-7" />
-              </div>
-              <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">How can I help with your farm?</h1>
-              <p className="mt-3 max-w-lg text-sm leading-6 text-muted-foreground sm:text-base">
-                I use your latest node readings to turn farm data into clear, practical guidance.
-              </p>
-            </div>
-          )}
-
-          <div className="mx-auto max-w-3xl space-y-8">
-          {visibleMessages.map((m, i) => (
-            <div key={i} className={cn("flex gap-3 sm:gap-4 animate-float-in", m.role === "user" ? "justify-end" : "justify-start")}>
-              {m.role === "assistant" && (
-                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-                  <Bot className="h-4 w-4 text-primary-foreground" />
-                </div>
-              )}
-              <div className={cn(
-                "max-w-[82%] text-[15px] leading-7",
-                m.role === "user"
-                  ? "rounded-3xl rounded-br-lg bg-primary px-5 py-3 text-primary-foreground shadow-sm"
-                  : "px-1 py-0.5 text-foreground"
-              )}>
-                <div className={cn(
-                  "prose prose-sm max-w-none",
-                  m.role === "user"
-                    ? "prose-invert prose-p:text-primary-foreground"
-                    : "prose-headings:mt-0 prose-headings:text-foreground prose-p:text-foreground/90 prose-strong:text-foreground prose-li:text-foreground/90 prose-blockquote:text-muted-foreground prose-blockquote:border-l-primary"
-                )}>
-                  {m.role === 'assistant' ? (
-                    <ReactMarkdown>{m.content}</ReactMarkdown>
-                  ) : (
-                    <div>{m.content}</div>
-                  )}
-                </div>
-              </div>
-              {m.role === "user" && (
-                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-xs font-semibold text-secondary-foreground">
-                  You
-                </div>
-              )}
-            </div>
-          ))}
-          {isLoading && (
-            <div className="flex gap-3 animate-float-in">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-                <Bot className="h-4 w-4 text-primary-foreground" />
-              </div>
-              <div className="flex h-9 items-center gap-1.5 px-1">
-                <span className="h-2 w-2 rounded-full bg-primary/60 animate-pulse" style={{ animationDelay: "0ms" }} />
-                <span className="h-2 w-2 rounded-full bg-primary/60 animate-pulse" style={{ animationDelay: "150ms" }} />
-                <span className="h-2 w-2 rounded-full bg-primary/60 animate-pulse" style={{ animationDelay: "300ms" }} />
-              </div>
-            </div>
-          )}
-          {isLoading && (
-            <div className="ml-12 text-xs text-muted-foreground">Checking the farm context…</div>
-          )}
-          <div ref={endRef} />
-          </div>
-        </div>
-
-        {isWelcomeState && (
-          <div className="mx-auto grid w-full max-w-3xl grid-cols-1 gap-2 pb-4 sm:grid-cols-3">
-              {suggestions.map((s, i) => (
-                <button key={i} onClick={() => sendText(s.text)}
-                  className="group flex min-h-24 items-start gap-3 rounded-xl border border-border bg-card p-4 text-left transition-colors hover:bg-secondary/60">
-                <s.icon className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-                <span className="text-sm font-medium leading-5 text-foreground/90">{s.text}</span>
-              </button>
-            ))}
+    <>
+      <PageHeader title="Soil Doctor" subtitle="Your farm's analysis room" />
+      
+      <div className="mx-auto w-full p-4 sm:p-6 pb-20 space-y-6 animate-in slide-in-from-bottom-4 duration-500">
+        
+        {/* Progress / Breadcrumbs */}
+        {step !== "action" && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground bg-card border border-border p-3 rounded-xl shadow-sm">
+            <button onClick={reset} className="hover:text-primary transition-colors flex items-center gap-1 font-medium">
+              <Sparkles className="h-4 w-4" /> Start
+            </button>
+            <ChevronRight className="h-4 w-4 opacity-50" />
+            <span className={step !== "action" ? "text-foreground font-medium" : ""}>
+              {ACTIONS.find(a => a.id === selectedAction)?.title}
+            </span>
+            
+            {selectedNode && (
+              <>
+                <ChevronRight className="h-4 w-4 opacity-50" />
+                <span className="text-foreground font-medium">{selectedNode}</span>
+              </>
+            )}
+            
+            {(step === "result") && (
+              <>
+                <ChevronRight className="h-4 w-4 opacity-50" />
+                <span className="text-foreground font-medium text-primary">Report</span>
+              </>
+            )}
           </div>
         )}
 
-        <div className="mx-auto w-full max-w-3xl pb-3">
-        <form onSubmit={handleSendMessage} className="flex items-end gap-2 rounded-3xl border border-border bg-card p-2 shadow-elevated focus-within:border-primary/60">
-          <textarea
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
-            placeholder="Message Soil Doctor…"
-            rows={1}
-            disabled={isLoading}
-            className="max-h-32 flex-1 resize-none bg-transparent px-3 py-2.5 text-[15px] leading-6 focus:outline-none placeholder:text-muted-foreground"
-          />
-          <Button type="submit" size="icon" disabled={!inputValue.trim() || isLoading} className="h-10 w-10 shrink-0 rounded-2xl bg-primary text-primary-foreground hover:bg-primary/90">
-            <Send className="h-4 w-4" />
-          </Button>
-        </form>
-        <p className="mt-3 flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
-          <Activity className="h-3 w-3" /> Live node context is used when available. Verify important decisions in the field.
-        </p>
-        </div>
+        {/* STEP 1: Select Action */}
+        {step === "action" && (
+          <div className="space-y-4">
+            <div className="text-center py-6 mb-2">
+              <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-glow">
+                <Sparkles className="h-7 w-7" />
+              </div>
+              <h2 className="text-2xl font-bold tracking-tight">What would you like to do?</h2>
+              <p className="text-muted-foreground mt-2">Select an option below to analyse your farm data.</p>
+            </div>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {ACTIONS.map((action) => (
+                <button
+                  key={action.id}
+                  onClick={() => handleActionSelect(action.id)}
+                  className="group flex flex-col text-left items-start gap-3 rounded-xl border border-border bg-card p-6 shadow-sm transition-all hover:border-primary/50 hover:shadow-md hover:bg-primary/5"
+                >
+                  <div className="p-3 bg-primary/10 text-primary rounded-lg group-hover:scale-110 transition-transform">
+                    <action.icon className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-lg">{action.title}</h3>
+                    <p className="text-sm text-muted-foreground mt-1 leading-relaxed">{action.description}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* STEP 2: Select Node */}
+        {step === "node" && (
+          <div className="space-y-6">
+            <div className="bg-card border border-border p-6 rounded-xl shadow-sm text-center">
+              <h2 className="text-xl font-bold">Which sensor location?</h2>
+              <p className="text-muted-foreground mt-1">Select the area you want to {selectedAction}.</p>
+            </div>
+            
+            {loadingNodes ? (
+              <div className="p-12 text-center text-muted-foreground border border-border rounded-xl bg-card">
+                Finding your sensors...
+              </div>
+            ) : nodes.length === 0 ? (
+              <div className="p-12 text-center text-muted-foreground border border-border rounded-xl bg-card">
+                No active sensors found.
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                {nodes.map(nodeId => (
+                  <button
+                    key={nodeId}
+                    onClick={() => handleNodeSelect(nodeId)}
+                    className="flex flex-col items-center justify-center p-6 border border-border bg-card rounded-xl shadow-sm hover:border-primary hover:bg-primary/5 hover:shadow-md transition-all group"
+                  >
+                    <Activity className="h-8 w-8 text-muted-foreground group-hover:text-primary mb-3 transition-colors" />
+                    <span className="font-bold font-mono text-lg">{nodeId}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* STEP 2 (Alternative): Ask Question */}
+        {step === "question" && (
+          <div className="bg-card border border-border p-6 sm:p-8 rounded-xl shadow-sm max-w-2xl mx-auto">
+            <h2 className="text-xl font-bold mb-4">What's your question?</h2>
+            <form onSubmit={handleQuestionSubmit} className="space-y-4">
+              <textarea
+                value={customQuestion}
+                onChange={(e) => setCustomQuestion(e.target.value)}
+                placeholder="E.g., Which of my fields needs the most water right now?"
+                className="w-full min-h-[120px] rounded-lg border border-border bg-background p-4 text-base focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary resize-none"
+                autoFocus
+              />
+              <div className="flex justify-end gap-3">
+                <Button type="button" variant="outline" onClick={reset}>Cancel</Button>
+                <Button type="submit" disabled={!customQuestion.trim()}>Get Answer</Button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* STEP 3: Results */}
+        {step === "result" && (
+          selectedAction === "view" && selectedNode ? (
+            <div className="bg-card border border-border rounded-xl shadow-card overflow-hidden flex flex-col p-2 sm:p-6">
+              <div className="flex justify-end mb-4">
+                <Button variant="outline" size="sm" onClick={reset} className="text-muted-foreground hover:text-foreground">
+                  <RotateCcw className="h-4 w-4 mr-2" /> Start Over
+                </Button>
+              </div>
+              <SoilDoctorCharts nodeId={selectedNode} />
+            </div>
+          ) : (
+            <div className="bg-card border border-border rounded-xl shadow-card overflow-hidden flex flex-col min-h-[400px]">
+              <div className="bg-secondary/50 border-b border-border p-4 flex justify-between items-center">
+                <div className="font-medium flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-primary" />
+                  Soil Doctor Analysis
+                </div>
+                <Button variant="ghost" size="sm" onClick={reset} className="text-muted-foreground hover:text-foreground">
+                  <RotateCcw className="h-4 w-4 mr-2" /> Start Over
+                </Button>
+              </div>
+              
+              <div className="p-6 sm:p-8 flex-1">
+                {loadingResult ? (
+                  <div className="flex flex-col items-center justify-center h-full space-y-4 text-muted-foreground min-h-[200px]">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary/20 text-primary animate-pulse">
+                      <Sparkles className="h-6 w-6" />
+                    </div>
+                    <p>Analyzing farm data...</p>
+                  </div>
+                ) : (
+                  <div className="prose prose-sm sm:prose-base max-w-none prose-headings:font-bold prose-headings:tracking-tight prose-a:text-primary prose-p:leading-relaxed">
+                    <ReactMarkdown>{result || ""}</ReactMarkdown>
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        )}
       </div>
-    </div>
+    </>
   );
 };
 
-export default AiDoctor;
+export default SoilDoctor;

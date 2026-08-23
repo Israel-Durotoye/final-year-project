@@ -66,12 +66,12 @@ const Alerts = () => {
 
   return (
     <>
-      <PageHeader title="Alerts" subtitle={`${alerts.length} active threshold breach${alerts.length === 1 ? "" : "es"} across ${nodeCount} nodes`} />
+      <PageHeader title="Alerts" subtitle={`${alerts.length} item${alerts.length === 1 ? "" : "s"} need your attention`} />
       <div className="space-y-4 p-6">
         <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 shadow-card sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-semibold">Live threshold monitoring</p>
-            <p className="text-xs text-muted-foreground">Alerts are generated from the latest reading for each node and refresh every 30 seconds.</p>
+            <p className="text-sm font-semibold">Monitoring</p>
+            <p className="text-xs text-muted-foreground">We check your readings every 30 seconds and flag anything unusual.</p>
           </div>
           <div className="flex gap-2">
             <Button variant="outline" size="sm" onClick={() => void refreshAlerts()} disabled={loading}><RefreshCw className={cn("mr-2 h-4 w-4", loading && "animate-spin")} />Refresh</Button>
@@ -82,12 +82,12 @@ const Alerts = () => {
         {error && <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">Could not evaluate alerts: {error}</div>}
 
         {loading ? (
-          <div className="rounded-xl border border-border bg-card p-12 text-center text-sm text-muted-foreground">Checking latest node readings…</div>
+          <div className="rounded-xl border border-border bg-card p-12 text-center text-sm text-muted-foreground">Checking your farm…</div>
         ) : alerts.length === 0 && !error ? (
           <div className="rounded-xl border border-border bg-card p-12 text-center">
             <CheckCircle2 className="mx-auto h-10 w-10 text-primary" />
-            <h2 className="mt-4 font-semibold">No threshold breaches</h2>
-            <p className="mt-1 text-sm text-muted-foreground">The latest readings from all {nodeCount} nodes are within your configured limits.</p>
+            <h2 className="mt-4 font-semibold">Everything looks good</h2>
+            <p className="mt-1 text-sm text-muted-foreground">The latest readings from all {nodeCount} sensors are within normal limits.</p>
           </div>
         ) : (
           <Accordion type="multiple" className="space-y-3">

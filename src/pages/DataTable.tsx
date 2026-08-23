@@ -87,7 +87,7 @@ const DataTable = () => {
 
   return (
     <>
-      <PageHeader title="Data Table" subtitle="Historical telemetry logs across all nodes" />
+      <PageHeader title="Data Table" subtitle="Sensor Readings Log" />
       <div className="p-6 space-y-4">
         <div className="bg-card border border-border rounded-xl shadow-card p-4 flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
           <div className="flex items-center gap-2 flex-1">
@@ -111,15 +111,15 @@ const DataTable = () => {
         <div className="bg-card border border-border rounded-xl shadow-card overflow-hidden">
           <div className="overflow-x-auto">
             {loading ? (
-              <div className="p-8 text-center">Loading telemetry…</div>
+              <div className="p-8 text-center">Loading records…</div>
             ) : telemetry.length === 0 ? (
-              <div className="p-12 text-center text-muted-foreground">No historical telemetry records found.</div>
+              <div className="p-12 text-center text-muted-foreground">No records found for this period.</div>
             ) : (
               <table className="w-full text-sm">
                 <thead className="bg-secondary/60">
                   <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground">
                     {[
-                      "NODE ID","N","P","K","MOISTURE","TEMP","HUMIDITY","LAT","LNG","ALTITUDE","SATS","TIMESTAMP"
+                      "SENSOR","N","P","K","MOISTURE","TEMP","HUMIDITY","LAT","LNG","ALTITUDE","SATS","TIMESTAMP"
                     ].map(h => (
                       <th key={h} className="px-4 py-3 font-semibold">{h}</th>
                     ))}

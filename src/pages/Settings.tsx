@@ -60,8 +60,8 @@ const Settings = () => {
 
   return (
     <>
-      <PageHeader title="Settings" subtitle="Configure your account, alerts, and integrations" />
-      <div className="max-w-4xl space-y-6 p-6">
+      <PageHeader title="Settings" subtitle="Your preferences" />
+      <div className="w-full space-y-6 p-6">
         <section className="space-y-4 rounded-xl border border-border bg-card p-6 shadow-card">
           <div><h2 className="text-lg font-semibold">Profile</h2><p className="mt-1 text-sm text-muted-foreground">This name and role appear in the collapsible account control at the bottom-left of the app.</p></div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

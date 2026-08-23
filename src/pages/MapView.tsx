@@ -1,4 +1,5 @@
 import { PageHeader } from "@/components/layout/PageHeader";
+import { getNigerianSeason } from "@/lib/season";
 import { useEffect, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 import { MapPreview } from "@/components/MapPreview";
@@ -172,14 +173,14 @@ const MapView = () => {
           </aside>
 
           <aside className="glass-card border border-border rounded-xl shadow-card p-5 flex-1">
-            <h2 className="font-semibold mb-1">Node Inspector</h2>
+            <h2 className="font-semibold mb-1">Sensor Details</h2>
             <p className="text-xs text-muted-foreground mb-4">Click a marker to view details</p>
             {node ? (
               <div className="space-y-3">
                 <div>
                   <p className="text-[10px] font-sans font-bold uppercase tracking-widest text-muted-foreground">Selected</p>
                   <p className="text-xl font-display font-bold uppercase tracking-wider">{node.Node_ID}</p>
-                  <p className="text-xs font-mono text-muted-foreground">{node.Target_Crop ?? "-"} · {node.Season ?? "-"}</p>
+                  <p className="text-xs font-mono text-muted-foreground">{node.Target_Crop ?? "-"} · {getNigerianSeason(node.Timestamp)}</p>
                 </div>
                 <div className="grid grid-cols-2 gap-2 pt-4 border-t border-white/10">
                   {Object.entries(node).filter(([k]) => k !== "id" && k !== "Node_ID").map(([k, v]) => (
