@@ -50,7 +50,7 @@ const ZoomResetControl = ({ coordinates }: { coordinates: [number, number][] }) 
 export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, interactive = true, children }: Props) => {
   const [mapStyle, setMapStyle] = useState<"street" | "satellite">("satellite");
 
-  // Normalize nodes (handles both mock data and Supabase schema)
+  // Normalize nodes (handles Supabase schema)
   const normalizedNodes = useMemo(() => {
     return nodes.map((n) => {
       // Prioritize node_id. If a table has an 'id' primary key, we don't want it to override the node_id

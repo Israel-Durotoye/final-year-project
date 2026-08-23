@@ -4,7 +4,7 @@ import { MetricCard } from "@/components/MetricCard";
 import { MapPreview } from "@/components/MapPreview";
 import { TrendCharts } from "@/components/TrendCharts";
 import {
-  Radio, Leaf, FlaskConical, Droplets, CloudRain, Thermometer, Sprout, MapPin, Satellite
+  Radio, Leaf, FlaskConical, Droplets, CloudRain, Thermometer, Sprout, MapPin, Satellite, Bot
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createClient } from "@supabase/supabase-js";
@@ -19,6 +19,8 @@ const Dashboard = () => {
   const [selected, setSelected] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [statusLoading, setStatusLoading] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -57,6 +59,46 @@ const Dashboard = () => {
     return () => { mounted = false; };
   }, []);
 
+  useEffect(() => {
+    if (!selected || !latestNodes.length) return;
+    const nodeData = latestNodes.find(n => n.Node_ID === selected);
+    if (!nodeData) return;
+
+    let mounted = true;
+    const fetchStatus = async () => {
+      setStatusLoading(true);
+      setStatusMessage(null);
+      try {
+        const telemetryContext = `Telemetry: Nitrogen=${nodeData.Nitrogen_mg_k}, Phosphorus=${nodeData.Phosphorus_m}, Potassium=${nodeData.Potassium_mg_}, Moisture=${nodeData["Moisture_%"]}%, Temp=${nodeData.Temperature_C}°C`;
+        const query = `Provide a single, clean sentence showing the status and any needed action for node ${selected}. ${telemetryContext}`;
+        
+        const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
+        const res = await fetch(`${API_BASE}/chat/`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query, top_k: 1 })
+        });
+        
+        if (!res.ok) throw new Error("Failed to fetch status");
+        const data = await res.json();
+        
+        if (mounted) {
+          // Clean up formatting to ensure it's a single clean sentence
+          let msg = data.answer.replace(/\*\*[^*]+\*\*/g, '').replace(/\n/g, ' ').trim();
+          setStatusMessage(msg);
+        }
+      } catch (err) {
+        if (mounted) setStatusMessage("Status currently unavailable.");
+      } finally {
+        if (mounted) setStatusLoading(false);
+      }
+    };
+    
+    fetchStatus();
+    
+    return () => { mounted = false; };
+  }, [selected, latestNodes]);
+
   const node = latestNodes.find((n) => n.Node_ID === selected) ?? latestNodes[0];
 
   return (
@@ -69,6 +111,30 @@ const Dashboard = () => {
           <MetricCard icon={Droplets} label="Avg Soil Moisture" value={rows.length ? `${(rows.reduce((s, r) => s + Number(r["Moisture_%"] || 0), 0) / rows.length).toFixed(1)}%` : "-"} trend="Network average" tone="success" />
           <MetricCard icon={Thermometer} label="Avg Temp" value={rows.length ? `${(rows.reduce((s, r) => s + Number(r.Temperature_C || 0), 0) / rows.length).toFixed(1)}°C` : "-"} trend="Network average" tone="warning" />
         </div>
+
+        {/* AI Status Panel */}
+        <section className="bg-card border border-border rounded-xl shadow-card overflow-hidden">
+          <div className="p-5 flex items-start gap-4">
+            <div className="bg-primary/10 p-3 rounded-full text-primary mt-1">
+              <Bot className="h-6 w-6" />
+            </div>
+            <div className="flex-1">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                AI Node Status
+                {selected && (
+                  <span className="text-xs bg-primary/20 text-primary px-2 py-0.5 rounded-full font-mono">{selected}</span>
+                )}
+              </h2>
+              <div className="mt-2 text-muted-foreground text-sm leading-relaxed">
+                {statusLoading ? (
+                  <span className="animate-pulse">Analyzing latest telemetry...</span>
+                ) : (
+                  <span>{statusMessage || "Select a node to view its AI-interpreted status."}</span>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
 
         {/* Node parameters */}
         <section className="bg-card border border-border rounded-xl shadow-card overflow-hidden">

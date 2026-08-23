@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { MapPreview } from "@/components/MapPreview";
-import { nodes } from "@/lib/mockData";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -75,7 +74,7 @@ const AddNode = () => {
             const y = (e.clientY - r.top) / r.height;
             setPin({ lat: +(36.775 + (1 - y) * 0.01).toFixed(4), lng: +(-119.425 + x * 0.015).toFixed(4) });
           }}>
-            <MapPreview nodes={[...nodes, { id: "NEW", farm: "", location: "", lat: pin.lat, lng: pin.lng, status: "online", metrics: nodes[0].metrics, lastReading: "" }]} height="h-[420px]" selectedId="NEW" />
+            <MapPreview nodes={[{ id: "NEW", farm: "", location: "", lat: pin.lat, lng: pin.lng, status: "online", metrics: { nitrogen: 0, phosphorus: 0, potassium: 0, moisture: 0, ph: 0, temperature: 0 }, lastReading: "" }]} height="h-[420px]" selectedId="NEW" />
           </div>
         </div>
       </div>

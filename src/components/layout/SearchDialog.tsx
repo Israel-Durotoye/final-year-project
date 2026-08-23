@@ -46,7 +46,7 @@ export function SearchDialog({ open, onOpenChange }: { open: boolean, onOpenChan
           </CommandItem>
         </CommandGroup>
         
-        {/* We can expand this with mock nodes or real nodes fetched from Supabase later */}
+        {/* Quick Actions */}
         <CommandGroup heading="Quick Actions">
           <CommandItem onSelect={() => handleSelect("/add-node")}>
             <Radio className="mr-2 h-4 w-4" />
