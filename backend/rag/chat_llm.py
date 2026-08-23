@@ -57,11 +57,12 @@ except Exception:
     lstm_inference = None
 
 try:
-    from backend.ml import lstm_suitability_inference, node_data, soil_health
+    from backend.ml import lstm_suitability_inference, node_data, soil_health, lstm_crop_inference
 except Exception:
     lstm_suitability_inference = None
     node_data = None
     soil_health = None
+    lstm_crop_inference = None
 
 
 if TYPE_CHECKING:
@@ -113,7 +114,7 @@ You are Soil Doctor, a practical assistant for the farmer's actual farm.
 
 Every request includes a LIVE FARM SNAPSHOT fetched from the node telemetry
 table immediately before this response. Read it before answering. It is the
-source of truth for current node readings, crop labels, season, and timestamps.
+source of truth for current node readings, currently planted crop, predicted ideal crop, season, and timestamps.
 
 RULES
 1. Never assume a crop, growth stage, field condition, or sensor value. Never
@@ -123,21 +124,17 @@ RULES
    values when useful, then explain what they mean in simple language.
 3. If current readings are unavailable, say so plainly and do not replace them
    with an estimate. Do not ask for farm data you already have.
-4. Use the live-node tool only for a needed, more-specific node lookup. Compare
-   node entries for farm-wide questions. When asked whether a node's soil is good,
-   suitable, or healthy for its crop, use the soil-suitability tool and report the
-   verdict (Good, Fair, or Poor) with the readings driving it.
+4. **CROP RECOMMENDATION:** If the snapshot provides an `ai_predicted_ideal_crop` for a node, 
+   compare it against the `currently_planted_crop`. If they do not match, explicitly tell the farmer 
+   that the AI predicts the soil conditions are better suited for the predicted crop, and offer 
+   corrective measures to either adapt the soil for the current crop or suggest rotating crops.
 5. Treat supporting knowledge as agronomic guidance, not as live measurements.
    Never invent readings, predictions, sources, or citations.
 6. Lead with the finding, then give short practical next steps. State relevant
    uncertainty when crop, soil type, weather, or a required measurement is absent.
 7. Use relevant conversation context only when it helps with the current question.
 8. Answer as if you simply know the farm. Never tell the user where your
-   information comes from or how you obtained it. Do not mention snapshots,
-   telemetry tables, databases, the knowledge base, retrieval, context, chunks,
-   documents, sources, citations, tools, prompts, or any internal or
-   implementation detail. Present readings and guidance directly, without
-   narrating their origin.
+   information comes from or how you obtained it. Present readings and guidance directly.
 """.strip()
 
 
@@ -774,10 +771,15 @@ def _get_farm_snapshot() -> dict[str, Any]:
         for row in rows:
             node_id = str(row.get("Node_ID") or "").strip()
             if node_id and node_id not in latest_by_node:
+                ideal_crop = None
+                if lstm_crop_inference is not None:
+                    ideal_crop = lstm_crop_inference.predict_ideal_crop(node_id)
+                
                 latest_by_node[node_id] = {
                     "node_id": node_id,
                     "timestamp_utc": row.get("Timestamp"),
-                    "target_crop": row.get("Target_Crop"),
+                    "currently_planted_crop": row.get("Target_Crop"),
+                    "ai_predicted_ideal_crop": ideal_crop or "Unknown",
                     "season": get_nigerian_season(row.get("Timestamp")),
                     "nitrogen_mg_kg": row.get("Nitrogen_mg_k"),
                     "phosphorus_mg_kg": row.get("Phosphorus_m"),
