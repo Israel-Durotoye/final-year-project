@@ -19,17 +19,17 @@ const toneMap = {
 };
 
 export const MetricCard = ({ icon: Icon, label, value, unit, trend, tone = "default" }: Props) => (
-  <div className="glass-card border border-border rounded-xl p-5 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-all">
-    <div className="flex items-start justify-between mb-3">
-      <span className="text-[10px] font-sans uppercase tracking-widest text-muted-foreground font-medium">{label}</span>
-      <div className={cn("h-9 w-9 rounded-lg flex items-center justify-center", toneMap[tone])}>
-        <Icon className="h-[18px] w-[18px]" />
+  <div className="glass-card border border-border rounded-xl p-4 shadow-card hover:shadow-elevated hover:-translate-y-0.5 transition-all min-w-0 overflow-hidden">
+    <div className="flex items-start justify-between mb-2 gap-2">
+      <span className="text-[11px] font-sans uppercase tracking-wider text-muted-foreground font-medium truncate min-w-0">{label}</span>
+      <div className={cn("h-8 w-8 rounded-lg flex items-center justify-center shrink-0", toneMap[tone])}>
+        <Icon className="h-4 w-4" />
       </div>
     </div>
-    <div className="flex items-baseline gap-1.5">
-      <span className="text-3xl font-mono font-bold tracking-tight text-foreground">{value}</span>
-      {unit && <span className="text-sm font-mono text-muted-foreground font-medium">{unit}</span>}
+    <div className="flex items-baseline gap-1 min-w-0">
+      <span className="text-2xl font-mono font-bold tracking-tight text-foreground truncate">{value}</span>
+      {unit && <span className="text-xs font-mono text-muted-foreground font-medium shrink-0">{unit}</span>}
     </div>
-    {trend && <p className="text-xs font-sans text-muted-foreground mt-1.5">{trend}</p>}
+    {trend && <p className="text-xs font-sans text-muted-foreground mt-1 truncate">{trend}</p>}
   </div>
 );

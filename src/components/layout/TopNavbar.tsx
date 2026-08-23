@@ -35,7 +35,7 @@ export const TopNavbar = () => {
           </div>
         </NavLink>
 
-        <nav className="hidden md:flex items-center space-x-2 bg-background/40 backdrop-blur-md border border-white/5 rounded-full px-2 py-1.5 shadow-lg">
+        <nav className="hidden md:flex items-center space-x-1 bg-background/40 backdrop-blur-md border border-white/5 rounded-full px-2 py-1.5 shadow-lg">
           {navItems.map((item) => {
             const active = pathname === item.to;
             return (
@@ -43,13 +43,13 @@ export const TopNavbar = () => {
                 key={item.to}
                 to={item.to}
                 className={cn(
-                  "flex items-center gap-2 px-4 py-2 rounded-full text-xs font-mono tracking-widest uppercase transition-all duration-300",
+                  "flex items-center gap-1.5 px-3 py-2 rounded-full text-[11px] font-sans font-medium tracking-wide uppercase transition-all duration-300 whitespace-nowrap",
                   active
                     ? "bg-primary text-primary-foreground shadow-glow"
                     : "text-foreground/60 hover:text-primary hover:bg-black/5 dark:hover:bg-white/5"
                 )}
               >
-                <item.icon className="h-4 w-4" />
+                <item.icon className="h-4 w-4 shrink-0" />
                 <span className="hidden lg:inline-block">{item.label}</span>
               </NavLink>
             );
@@ -87,17 +87,17 @@ export const TopNavbar = () => {
                 to={item.to}
                 onClick={() => setMobileMenuOpen(false)}
                 className={cn(
-                  "flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-mono tracking-widest uppercase transition-all duration-300",
+                  "flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-sans font-medium tracking-wide uppercase transition-all duration-300",
                   active
                     ? "bg-primary text-primary-foreground shadow-glow"
                     : "text-foreground hover:bg-black/5 dark:hover:bg-white/5"
                 )}
               >
-                <item.icon className="h-5 w-5" />
+                <item.icon className="h-5 w-5 shrink-0" />
                 <span>{item.label}</span>
               </NavLink>
             );
-          })}
+          })
           
           <div className="h-px w-full bg-border my-2" />
           
@@ -106,7 +106,7 @@ export const TopNavbar = () => {
               setTheme(theme === "dark" ? "light" : "dark");
               setMobileMenuOpen(false);
             }}
-            className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-mono tracking-widest uppercase text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-all w-full text-left"
+            className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-sans font-medium tracking-wide uppercase text-foreground hover:bg-black/5 dark:hover:bg-white/5 transition-all w-full text-left"
           >
             {theme === "dark" ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
             <span>{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>

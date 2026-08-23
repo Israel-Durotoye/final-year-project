@@ -71,17 +71,17 @@ const Dashboard = () => {
       try {
         const telemetryContext = `Telemetry: Nitrogen=${nodeData.Nitrogen_mg_k}, Phosphorus=${nodeData.Phosphorus_m}, Potassium=${nodeData.Potassium_mg_}, Moisture=${nodeData["Moisture_%"]}%, Temp=${nodeData.Temperature_C}°C`;
         const query = `Provide a single, clean sentence showing the status and any needed action for node ${selected}. ${telemetryContext}`;
-        
+
         const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
         const res = await fetch(`${API_BASE}/chat/`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ query, top_k: 1 })
         });
-        
+
         if (!res.ok) throw new Error("Failed to fetch status");
         const data = await res.json();
-        
+
         if (mounted) {
           // Clean up formatting to ensure it's a single clean sentence
           let msg = data.answer.replace(/\*\*[^*]+\*\*/g, '').replace(/\n/g, ' ').trim();
@@ -93,9 +93,9 @@ const Dashboard = () => {
         if (mounted) setStatusLoading(false);
       }
     };
-    
+
     fetchStatus();
-    
+
     return () => { mounted = false; };
   }, [selected, latestNodes]);
 
@@ -120,7 +120,7 @@ const Dashboard = () => {
             </div>
             <div className="flex-1">
               <h2 className="text-lg font-semibold flex items-center gap-2">
-                AI Node Status
+                Node Status
                 {selected && (
                   <span className="text-xs bg-primary/20 text-primary px-2 py-0.5 rounded-full font-mono">{selected}</span>
                 )}
@@ -129,7 +129,7 @@ const Dashboard = () => {
                 {statusLoading ? (
                   <span className="animate-pulse">Analyzing latest telemetry...</span>
                 ) : (
-                  <span>{statusMessage || "Select a node to view its AI-interpreted status."}</span>
+                  <span>{statusMessage || "Select a node to view its status."}</span>
                 )}
               </div>
             </div>

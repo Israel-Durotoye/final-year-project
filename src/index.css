@@ -132,9 +132,17 @@
 
 @layer base {
   * { @apply border-border; }
+  html {
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
   body {
     @apply bg-background text-foreground;
-    font-feature-settings: "rlig" 1, "calt" 1;
+    font-weight: 400;
+    font-feature-settings: "rlig" 1, "calt" 1, "cv01" 1;
+    letter-spacing: -0.017em;
     background-image: radial-gradient(circle at top center, hsl(158 64% 52% / 0.05), transparent 40%);
   }
 }
