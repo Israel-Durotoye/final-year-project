@@ -17,13 +17,25 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-3.Run the dev server (uvicorn):
+3.Rebuild the live agronomic knowledge store from the canonical JSONL dataset:
+
+```bash
+python -m backend.scripts.ingest_agronomic_knowledge
+```
+
+The importer reads `rag_import/agronomic_knowledge.jsonl`, embeds each
+`knowledge_text` value with the backend's configured embedding model, uses
+`fact_id` as the Chroma document ID, and writes only runtime artifacts to
+`backend/data/agronomic_knowledge/`. The prebuilt `rag_import/chroma_db` is not
+used.
+
+4.Run the dev server (uvicorn):
 
 ```bash
 uvicorn backend.main:app --reload --port 8000
 ```
 
-4.Example request (curl):
+5.Example request (curl):
 
 ```bash
 curl -X POST http://localhost:8000/evaluate \

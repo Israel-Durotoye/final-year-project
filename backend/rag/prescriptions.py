@@ -6,9 +6,11 @@ soil diagnoses. Actions are ranked by impact and dependencies.
 """
 
 import logging
+import math
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
+from backend.prescriptive.evaluator import ThresholdEvaluator
 from backend.rag import diagnostics, thresholds
 
 logger = logging.getLogger(__name__)
@@ -373,15 +375,47 @@ class PrescriptionEngine:
         return actions
 
     def _deduplicate_actions(self, actions: list[CorrectiveAction]) -> list[CorrectiveAction]:
-        """Remove duplicate actions (same target parameter)."""
-        seen = {}
-        unique = []
+        """Collapse actions that express the same management objective."""
+        seen: set[str] = set()
+        unique: list[CorrectiveAction] = []
+
         for action in actions:
-            key = action.target_parameter
-            if key not in seen:
-                seen[key] = action
-                unique.append(action)
+            key = self._semantic_action_family(action)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(action)
+
         return unique
+
+    @staticmethod
+    def _semantic_action_family(action: CorrectiveAction) -> str:
+        """Return a stable family key for semantically overlapping actions."""
+        text = action.action.lower()
+
+        families = {
+            "excess_water_management": (
+                "drainage", "standing water", "waterlogging", "aeration",
+            ),
+            "add_water": (
+                "increase irrigation", "increase watering", "irrigate",
+            ),
+            "mulch": ("mulch",),
+            "soil_acidity": ("lime", "liming"),
+            "soil_alkalinity": ("elemental sulfur", "lower soil ph"),
+            "nitrogen_fertilisation": ("nitrogen fertilizer", "urea", "ammonium nitrate"),
+            "phosphorus_fertilisation": ("phosphorus fertilizer", "superphosphate"),
+            "potassium_fertilisation": ("potassium fertilizer", "potash"),
+            "salinity_leaching": ("leach salts", "salt leaching"),
+            "organic_matter": ("crop residues", "compost", "aged manure"),
+        }
+
+        for family, phrases in families.items():
+            if any(phrase in text for phrase in phrases):
+                return family
+
+        normalized = " ".join(text.split())
+        return f"{action.target_parameter.lower()}::{normalized}"
 
     # ──────────────────────────────────────────────────────────────────
     # Private: Timeline and Monitoring
@@ -399,19 +433,14 @@ class PrescriptionEngine:
             return "Ongoing monitoring; improvements expected within growing season"
 
     def _monitoring_parameters_for_issues(self, issues: list[diagnostics.SoilIssue]) -> list[str]:
-        """Identify which parameters to monitor after interventions."""
-        params = set()
+        """Identify only parameters connected to diagnosed issues."""
+        params: list[str] = []
+
         for issue in issues:
-            params.add(issue.parameter)
-        
-        monitoring = list(params)
-        # Always monitor soil moisture and temperature
-        if "Moisture" not in monitoring:
-            monitoring.append("Moisture")
-        if "Temperature" not in monitoring:
-            monitoring.append("Temperature")
-        
-        return monitoring
+            if issue.parameter not in params:
+                params.append(issue.parameter)
+
+        return params
 
     # ──────────────────────────────────────────────────────────────────
     # Private: Action Registry (extensible for future models)
@@ -428,4 +457,501 @@ class PrescriptionEngine:
             "Temperature": ["mulch", "irrigation"],
             "Salinity": ["leaching", "water_source"],
             "Organic Matter": ["compost", "manure", "crop_residue"],
+        }
+
+
+# ---------------------------------------------------------------------------
+# Farm-level recommendation planning
+# ---------------------------------------------------------------------------
+
+class FarmRecommendationPlanner:
+    """
+    Convert parameter-level diagnostics into a concise farm-management brief.
+
+    The brief is decision support for the generation prompt. It deliberately
+    keeps acceptable readings out of the action list, merges related conditions
+    into one management objective, and treats nutrient signals as provisional
+    when crop stage, pH, or a crop-specific target is unavailable.
+    """
+
+    _FIELD_ALIASES = {
+        "pH": ("soil_ph", "ph"),
+        "Nitrogen": ("nitrogen_mg_kg", "nitrogen"),
+        "Phosphorus": ("phosphorus_mg_kg", "phosphorus"),
+        "Potassium": ("potassium_mg_kg", "potassium"),
+        "Moisture": ("moisture_pct", "moisture"),
+        "Temperature": ("temperature_c", "temperature"),
+        "Salinity (EC)": ("salinity_ds_m", "salinity", "ec"),
+        "Organic Matter": ("organic_matter_pct", "organic_matter"),
+        "Humidity": ("humidity_pct", "humidity"),
+    }
+
+    _DIAGNOSTIC_ARGUMENTS = {
+        "pH": "ph",
+        "Nitrogen": "nitrogen",
+        "Phosphorus": "phosphorus",
+        "Potassium": "potassium",
+        "Moisture": "moisture",
+        "Temperature": "temperature",
+        "Salinity (EC)": "salinity",
+        "Organic Matter": "organic_matter",
+    }
+
+    _NUTRIENTS = {"Nitrogen", "Phosphorus", "Potassium"}
+    _CROP_PROFILE_ALIASES = {
+        "maize": "maize_corn",
+        "corn": "maize_corn",
+        "maize corn": "maize_corn",
+        "maize/corn": "maize_corn",
+    }
+    _PROFILE_PARAMETER_KEYS = {
+        "pH": "soil_ph",
+        "Nitrogen": "nitrogen_ppm",
+        "Phosphorus": "phosphorus_ppm",
+        "Potassium": "potassium_ppm",
+        "Moisture": "soil_moisture",
+        "Temperature": "soil_temperature",
+        "Salinity (EC)": "electrical_conductivity",
+        "Organic Matter": "organic_matter_percent",
+        "Humidity": "ambient_humidity",
+    }
+    _SEVERITY_RANK = {
+        thresholds.Severity.CRITICAL: 0,
+        thresholds.Severity.HIGH: 1,
+        thresholds.Severity.MODERATE: 2,
+        thresholds.Severity.LOW: 3,
+    }
+
+    def __init__(self) -> None:
+        self._diagnostic_engine = diagnostics.SoilDiagnosticEngine()
+        self._prescription_engine = PrescriptionEngine()
+        self._crop_threshold_evaluator = ThresholdEvaluator()
+
+    @staticmethod
+    def _number(value: Any) -> float | None:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
+
+    def _extract_values(self, node: dict[str, Any]) -> dict[str, float]:
+        values: dict[str, float] = {}
+
+        for parameter, aliases in self._FIELD_ALIASES.items():
+            for alias in aliases:
+                if alias not in node:
+                    continue
+                value = self._number(node.get(alias))
+                if value is not None:
+                    values[parameter] = value
+                    break
+
+        return values
+
+    @staticmethod
+    def _format_value(parameter: str, value: float) -> str:
+        units = {
+            "pH": "",
+            "Nitrogen": " mg/kg",
+            "Phosphorus": " mg/kg",
+            "Potassium": " mg/kg",
+            "Moisture": "%",
+            "Temperature": "°C",
+            "Salinity (EC)": " dS/m",
+            "Organic Matter": "%",
+            "Humidity": "%",
+        }
+        rendered = f"{value:.2f}".rstrip("0").rstrip(".")
+        return f"{parameter} {rendered}{units.get(parameter, '')}"
+
+    @staticmethod
+    def _is_known(value: Any) -> bool:
+        text = str(value or "").strip().lower()
+        return bool(text and text not in {"unknown", "none", "null", "n/a"})
+
+    @staticmethod
+    def _severity_label(severity: thresholds.Severity) -> str:
+        return severity.name.lower()
+
+    @staticmethod
+    def _is_above(issue: diagnostics.SoilIssue) -> bool:
+        return issue.measured_value > issue.optimal_range[1]
+
+    @staticmethod
+    def _is_below(issue: diagnostics.SoilIssue) -> bool:
+        return issue.measured_value < issue.optimal_range[0]
+
+    def _prescription_for(
+        self,
+        action_plan: ActionPlan,
+        parameter: str,
+    ) -> str | None:
+        for action in action_plan.corrective_actions:
+            if action.target_parameter == parameter:
+                return action.action
+        return None
+
+    def _crop_profile_for(self, crop: Any) -> str | None:
+        normalized = " ".join(str(crop or "").strip().casefold().split())
+        return self._CROP_PROFILE_ALIASES.get(normalized)
+
+    def _diagnose_node(
+        self,
+        node: dict[str, Any],
+        values: dict[str, float],
+    ) -> tuple[diagnostics.SoilDiagnosis, str]:
+        """Prefer an existing crop profile; retain generic diagnostics as fallback."""
+        crop_profile = self._crop_profile_for(node.get("currently_planted_crop"))
+        timestamp = str(node.get("timestamp_utc") or "")
+        context = {
+            "crop": node.get("currently_planted_crop"),
+            "season": node.get("season"),
+            "soil_type": node.get("soil_type"),
+            "growth_stage": node.get("growth_stage"),
+        }
+
+        if crop_profile is None:
+            diagnostic_values = {
+                argument: values[parameter]
+                for parameter, argument in self._DIAGNOSTIC_ARGUMENTS.items()
+                if parameter in values
+            }
+            return (
+                self._diagnostic_engine.diagnose(
+                    **diagnostic_values,
+                    timestamp=timestamp,
+                    context=context,
+                ),
+                "generic agronomic screening; validate against crop-specific knowledge",
+            )
+
+        crop_issues: list[diagnostics.SoilIssue] = []
+        for parameter, value in values.items():
+            profile_key = self._PROFILE_PARAMETER_KEYS.get(parameter)
+            if profile_key is None:
+                continue
+
+            schema = self._crop_threshold_evaluator.get_parameter_schema(
+                profile_key,
+                crop_profile,
+            )
+            optimal_low = float(schema["optimal_min"])
+            optimal_high = float(schema["optimal_max"])
+            critical_low = float(schema["critical_min"])
+            critical_high = float(schema["critical_max"])
+
+            if optimal_low <= value <= optimal_high:
+                continue
+
+            below = value < optimal_low
+            severity = (
+                thresholds.Severity.CRITICAL
+                if value <= critical_low or value >= critical_high
+                else thresholds.Severity.MODERATE
+            )
+            direction = "below" if below else "above"
+            crop_issues.append(diagnostics.SoilIssue(
+                issue=f"{parameter} outside the {crop_profile} reference range",
+                parameter=parameter,
+                measured_value=value,
+                optimal_range=(optimal_low, optimal_high),
+                severity=severity,
+                description=(
+                    f"{self._format_value(parameter, value)} is {direction} the "
+                    f"configured {crop_profile} screening range."
+                ),
+                root_cause=None,
+            ))
+
+        crop_issues.sort(key=lambda issue: self._SEVERITY_RANK[issue.severity])
+        overall_severity = (
+            crop_issues[0].severity
+            if crop_issues
+            else thresholds.Severity.LOW
+        )
+        return (
+            diagnostics.SoilDiagnosis(
+                timestamp=timestamp,
+                issues=crop_issues,
+                severity_summary=overall_severity,
+                interactions=[],
+                context=context,
+            ),
+            f"crop-specific profile: {crop_profile}",
+        )
+
+    def build_node_brief(self, node: dict[str, Any]) -> dict[str, Any]:
+        """Build a serializable, prioritized management brief for one node."""
+        values = self._extract_values(node)
+        diagnosis, screening_basis = self._diagnose_node(node, values)
+        action_plan = self._prescription_engine.generate_action_plan(diagnosis)
+        issues = {issue.parameter: issue for issue in diagnosis.issues}
+
+        classification: dict[str, list[str]] = {
+            "critical_problematic": [],
+            "borderline_watch": [],
+            "acceptable_optimal": [],
+            "unknown_not_enough_context": [],
+        }
+
+        for parameter, value in values.items():
+            if parameter == "Humidity":
+                bucket = "borderline_watch" if value >= 80.0 else "acceptable_optimal"
+                classification[bucket].append(parameter)
+                continue
+
+            issue = issues.get(parameter)
+            if issue is None:
+                classification["acceptable_optimal"].append(parameter)
+            elif parameter in self._NUTRIENTS:
+                classification["unknown_not_enough_context"].append(parameter)
+            elif issue.severity in {thresholds.Severity.CRITICAL, thresholds.Severity.HIGH}:
+                classification["critical_problematic"].append(parameter)
+            else:
+                classification["borderline_watch"].append(parameter)
+
+        priorities: list[dict[str, Any]] = []
+        handled_parameters: set[str] = set()
+        season = str(node.get("season") or "Unknown")
+        rainy_season = "rain" in season.lower()
+        humidity = values.get("Humidity")
+
+        moisture_issue = issues.get("Moisture")
+        temperature_issue = issues.get("Temperature")
+
+        if moisture_issue is not None:
+            wet = self._is_above(moisture_issue)
+            evidence = [self._format_value("Moisture", moisture_issue.measured_value)]
+            monitor = ["soil moisture"]
+            supporting_steps: list[str]
+
+            if wet:
+                if humidity is not None and humidity >= 80.0:
+                    evidence.append(self._format_value("Humidity", humidity))
+                if rainy_season:
+                    evidence.append(season)
+
+                supporting_steps = [
+                    "Suspend avoidable irrigation while the field remains excessively wet.",
+                    "Clear or maintain drainage routes so excess water can leave the root zone.",
+                ]
+                if (humidity is not None and humidity >= 80.0) or rainy_season:
+                    supporting_steps.append(
+                        "Scout the crop for wet-weather disease symptoms while the field dries."
+                    )
+                    monitor.append("standing water and disease symptoms")
+
+                label = "Excess wetness"
+                objective = "Restore root-zone aeration through coordinated drainage and water management."
+                domain = "excess_water"
+            else:
+                if temperature_issue is not None and self._is_above(temperature_issue):
+                    evidence.append(self._format_value("Temperature", temperature_issue.measured_value))
+                    handled_parameters.add("Temperature")
+                    monitor.append("soil temperature")
+
+                supporting_steps = [
+                    "Restore moisture with a controlled irrigation adjustment rather than a large one-off application.",
+                    "Reduce avoidable evaporation with suitable soil cover where agronomically appropriate.",
+                ]
+                label = "Root-zone water deficit"
+                objective = "Restore stable crop-available moisture and limit further water stress."
+                domain = "water_deficit"
+
+            prescribed = self._prescription_for(action_plan, "Moisture")
+            if prescribed and not wet:
+                supporting_steps[0] = prescribed + "."
+
+            priorities.append({
+                "domain": domain,
+                "label": label,
+                "severity": self._severity_label(moisture_issue.severity),
+                "severity_rank": self._SEVERITY_RANK[moisture_issue.severity],
+                "parameters": ["Moisture"],
+                "evidence": evidence,
+                "recommended_objective": objective,
+                "supporting_steps": supporting_steps[:3],
+                "monitor": monitor,
+                "context_limits": [],
+                "prescription_basis": prescribed,
+            })
+            handled_parameters.add("Moisture")
+
+            if (
+                wet
+                and temperature_issue is not None
+                and self._is_above(temperature_issue)
+                and temperature_issue.severity != thresholds.Severity.CRITICAL
+            ):
+                priorities[-1]["evidence"].append(
+                    self._format_value("Temperature", temperature_issue.measured_value)
+                )
+                priorities[-1]["parameters"].append("Temperature")
+                handled_parameters.add("Temperature")
+
+        if temperature_issue is not None and "Temperature" not in handled_parameters:
+            hot = self._is_above(temperature_issue)
+            priorities.append({
+                "domain": "temperature_stress",
+                "label": "Heat stress" if hot else "Cold stress",
+                "severity": self._severity_label(temperature_issue.severity),
+                "severity_rank": self._SEVERITY_RANK[temperature_issue.severity],
+                "parameters": ["Temperature"],
+                "evidence": [self._format_value("Temperature", temperature_issue.measured_value)],
+                "recommended_objective": (
+                    "Reduce root-zone heat load without worsening current moisture conditions."
+                    if hot
+                    else "Protect the root zone and avoid management that further delays warming."
+                ),
+                "supporting_steps": [
+                    "Use crop-appropriate soil cover and adjust field operations to the temperature trend."
+                ],
+                "monitor": ["soil temperature"],
+                "context_limits": ["Confirm crop growth stage before changing water management."],
+            })
+            handled_parameters.add("Temperature")
+
+        ph_issue = issues.get("pH")
+        if ph_issue is not None:
+            acidic = self._is_below(ph_issue)
+            context_limits = []
+            if not self._is_known(node.get("soil_type")):
+                context_limits.append("Soil type or buffering capacity is unavailable.")
+
+            priorities.append({
+                "domain": "soil_reaction",
+                "label": "Acidic soil reaction" if acidic else "Alkaline soil reaction",
+                "severity": self._severity_label(ph_issue.severity),
+                "severity_rank": self._SEVERITY_RANK[ph_issue.severity],
+                "parameters": ["pH"],
+                "evidence": [self._format_value("pH", ph_issue.measured_value)],
+                "recommended_objective": "Confirm the soil reaction and correct it before relying on nutrient additions.",
+                "supporting_steps": [
+                    "Confirm pH with a calibrated soil test.",
+                    "Determine any amendment type and rate from soil texture/buffering information and crop requirement.",
+                ],
+                "monitor": ["soil pH"],
+                "context_limits": context_limits,
+            })
+
+        for parameter, domain, label in (
+            ("Salinity (EC)", "salinity", "Salinity stress"),
+            ("Organic Matter", "soil_structure", "Low organic matter"),
+        ):
+            issue = issues.get(parameter)
+            if issue is None:
+                continue
+            prescribed = self._prescription_for(action_plan, parameter)
+            priorities.append({
+                "domain": domain,
+                "label": label,
+                "severity": self._severity_label(issue.severity),
+                "severity_rank": self._SEVERITY_RANK[issue.severity],
+                "parameters": [parameter],
+                "evidence": [self._format_value(parameter, issue.measured_value)],
+                "recommended_objective": issue.description,
+                "supporting_steps": [prescribed + "."] if prescribed else [],
+                "monitor": [parameter.lower()],
+                "context_limits": [],
+            })
+
+        nutrient_issues = [
+            issues[parameter]
+            for parameter in ("Nitrogen", "Phosphorus", "Potassium")
+            if parameter in issues
+        ]
+        if nutrient_issues:
+            worst_nutrient_severity = min(
+                (issue.severity for issue in nutrient_issues),
+                key=lambda severity: self._SEVERITY_RANK[severity],
+            )
+            evidence = [
+                self._format_value(issue.parameter, issue.measured_value)
+                for issue in nutrient_issues
+            ]
+            missing_context = [
+                label
+                for key, label in (
+                    ("growth_stage", "crop growth stage"),
+                    ("soil_type", "soil type"),
+                )
+                if not self._is_known(node.get(key))
+            ]
+            if "pH" not in values:
+                missing_context.insert(0, "soil pH")
+            if screening_basis.startswith("generic"):
+                missing_context.insert(0, "crop-specific nutrient target")
+            priorities.append({
+                "domain": "nutrient_verification",
+                "label": "Nutrient result requiring crop-specific verification",
+                "severity": (
+                    "high_investigation"
+                    if worst_nutrient_severity == thresholds.Severity.CRITICAL
+                    else "watch"
+                ),
+                "severity_rank": 2,
+                "parameters": [issue.parameter for issue in nutrient_issues],
+                "evidence": evidence,
+                "recommended_objective": (
+                    "Verify the nutrient concern against crop- and growth-stage-specific targets before treatment."
+                ),
+                "supporting_steps": [
+                    "Obtain or confirm soil pH, crop growth stage, and a representative soil test.",
+                    "Use the confirmed crop requirement to select an amendment; do not infer a rate from relative N-P-K sizes.",
+                ],
+                "monitor": [issue.parameter.lower() for issue in nutrient_issues],
+                "context_limits": (
+                    ["Missing: " + ", ".join(missing_context) + "."]
+                    if missing_context
+                    else []
+                ),
+            })
+
+        priorities.sort(key=lambda item: (item["severity_rank"], item["domain"]))
+
+        planted_crop = node.get("currently_planted_crop")
+        ideal_crop = node.get("ai_predicted_ideal_crop")
+        strategic_considerations: list[str] = []
+        if (
+            self._is_known(planted_crop)
+            and self._is_known(ideal_crop)
+            and str(planted_crop).strip().casefold() != str(ideal_crop).strip().casefold()
+        ):
+            strategic_considerations.append(
+                f"The currently planted crop is {planted_crop}, while the ML suitability prediction is {ideal_crop}. "
+                "Treat this as a strategic crop-soil comparison, not as proof that the current crop is failing."
+            )
+
+        if rainy_season:
+            preventive_focus = [
+                "Keep drainage routes serviceable ahead of further rain.",
+                "Scout the crop for wet-weather disease and weed pressure.",
+            ]
+        elif "dry" in season.lower():
+            preventive_focus = [
+                "Track the soil-moisture trend before changing irrigation frequency.",
+                "Maintain suitable soil cover to reduce avoidable water loss.",
+            ]
+        else:
+            preventive_focus = [
+                "Continue routine field scouting and record changes in the important trends.",
+                "Keep drainage and sensor placement in working order.",
+            ]
+
+        return {
+            "node_id": node.get("node_id") or "Unknown node",
+            "currently_planted_crop": planted_crop or "Unknown",
+            "season": season,
+            "screening_basis": screening_basis,
+            "internal_parameter_classification": classification,
+            "healthy_sensor_state": len(priorities) == 0,
+            "priorities": priorities[:3],
+            "strategic_considerations": strategic_considerations,
+            "preventive_focus_if_no_actionable_problem": preventive_focus,
+            "output_constraints": [
+                "Do not narrate acceptable parameters.",
+                "Present one consolidated recommendation per independent priority.",
+                "Do not state an exact nutrient or amendment rate without the required crop and soil context.",
+            ],
         }

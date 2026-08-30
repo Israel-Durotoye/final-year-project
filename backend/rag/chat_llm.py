@@ -104,7 +104,6 @@ API_BACKOFF_MULTIPLIER = 2.0
 FARM_DATA_TABLE = os.getenv("FARM_DATA_TABLE", "capstone_dataset")
 FARM_SNAPSHOT_FETCH_LIMIT = 500
 
-
 # ============================================================================
 # SYSTEM INSTRUCTION
 # ============================================================================
@@ -120,8 +119,9 @@ RULES
 1. Never assume a crop, growth stage, field condition, or sensor value. Never
    mention maize, V6, or any crop stage unless it appears in live data, supplied
    knowledge, or the user's message.
-2. Use current node readings for farm questions. State node names and measured
-   values when useful, then explain what they mean in simple language.
+2. Use current node readings for farm questions. Mention only readings that
+   materially support the farm-level diagnosis. Never turn the answer into a
+   parameter-by-parameter sensor commentary or a dump of all measurements.
 3. If current readings are unavailable, say so plainly and do not replace them
    with an estimate. Do not ask for farm data you already have.
 4. **CROP RECOMMENDATION:** If the snapshot provides an `ai_predicted_ideal_crop` for a node, 
@@ -135,6 +135,53 @@ RULES
 7. Use relevant conversation context only when it helps with the current question.
 8. Answer as if you simply know the farm. Never tell the user where your
    information comes from or how you obtained it. Present readings and guidance directly.
+
+FARM-LEVEL RECOMMENDATION REASONING
+1. Before writing, silently classify the available parameters as:
+   critical/problematic, borderline/watch, acceptable/optimal, or unknown/not
+   enough context. This is an internal reasoning step; do not mechanically print
+   the buckets.
+2. Determine the dominant agronomic constraint across the whole node or farm.
+   Normally present one main priority. Present a second priority only when it is
+   genuinely serious and agronomically independent.
+3. Do not explain, recommend treatment for, or spend output space on acceptable
+   readings. A normal value may be mentioned only when it materially supports the
+   overall conclusion.
+4. Merge related observations into one management problem. For example, high
+   soil moisture, high humidity, and rainy-season conditions are one excess-
+   wetness/drainage problem with associated disease risk, not three separate
+   sensor problems.
+5. Consolidate overlapping actions. "Improve drainage", "clear drainage
+   channels", "remove standing water", and "reduce waterlogging" belong to one
+   drainage-management recommendation. Likewise, repeated ways of saying "do
+   not irrigate yet" are one action.
+6. Use the FARM-LEVEL PRIORITY BRIEF as a prioritization aid, then verify its
+   candidate issues against the live snapshot, the planted crop, season, and
+   supplied agronomic knowledge. The brief is not a new measurement and generic
+   screening ranges must not override crop-specific evidence.
+7. Never diagnose a nutrient deficiency merely because its number is smaller
+   than another nutrient value. If crop-specific targets, pH, soil type, growth
+   stage, or a representative soil test are required but unavailable, describe
+   the nutrient result as something to investigate. Do not invent a fertiliser
+   product rate, lime rate, or amendment dose.
+8. If all important readings are acceptable, say that no major sensor-based
+   correction is currently required. Give only one to three crop- and season-
+   appropriate preventive or improvement actions supported by the available
+   evidence. Never invent a problem so the report sounds useful.
+9. Keep crop-suitability comparison intact. A mismatch between the planted crop
+   and the ML-predicted ideal crop is a strategic consideration, not permission
+   to produce unrelated sensor-by-sensor commentary.
+
+DEFAULT PRESENTATION FOR FARM ASSESSMENTS
+- Start with a one- or two-sentence overall farm/node assessment. Do not start
+  with a list of readings.
+- Add **Main concern** only when an actionable problem exists.
+- Add **Recommended action** with one consolidated management objective and no
+  more than two to four short supporting steps.
+- Add **What to monitor** for only the parameters or field signs connected to
+  the stated priority.
+- Aim for three to six actionable points total, preferably fewer. The answer
+  must not get longer merely because more sensors are present.
 """.strip()
 
 
@@ -616,6 +663,74 @@ def _filter_conversation_history(
     return relevant
 
 
+def _select_nodes_for_management_brief(
+    farm_snapshot: dict[str, Any],
+    query: str,
+    conversation_history: list[dict[str, str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Select explicitly referenced nodes, or all nodes for a farm-wide query."""
+    raw_nodes = farm_snapshot.get("nodes")
+    if not isinstance(raw_nodes, list):
+        return []
+
+    nodes = [node for node in raw_nodes if isinstance(node, dict)]
+    if not nodes:
+        return []
+
+    recent_context = " ".join(
+        str(message.get("content", ""))
+        for message in (conversation_history or [])[-4:]
+        if isinstance(message, dict)
+    )
+    reference_text = f"{query} {recent_context}".casefold()
+
+    selected = [
+        node
+        for node in nodes
+        if str(node.get("node_id") or "").strip().casefold() in reference_text
+        and str(node.get("node_id") or "").strip()
+    ]
+    return selected or nodes
+
+
+def _build_farm_management_context(
+    farm_snapshot: dict[str, Any],
+    query: str,
+    conversation_history: list[dict[str, str]] | None = None,
+) -> str:
+    """Build an internal farm-level priority brief from the live snapshot."""
+    if farm_snapshot.get("status") != "online":
+        return (
+            "Farm-level prioritization is unavailable because current farm "
+            "readings could not be retrieved."
+        )
+
+    nodes = _select_nodes_for_management_brief(
+        farm_snapshot,
+        query,
+        conversation_history,
+    )
+    if not nodes:
+        return "No current node readings were available for farm-level prioritization."
+
+    try:
+        planner = prescriptions.FarmRecommendationPlanner()
+        briefs = [planner.build_node_brief(node) for node in nodes]
+    except Exception as exc:
+        logger.warning("Farm-level recommendation planning failed: %s", exc)
+        return (
+            "Structured farm-level prioritization could not be generated. "
+            "Reason directly from the live snapshot without listing every reading."
+        )
+
+    return (
+        "This is an internal prioritization aid derived from the live snapshot. "
+        "Do not reproduce its classification buckets or JSON mechanically. "
+        "Use knowledge-base evidence to validate crop-specific interpretation.\n"
+        f"{json.dumps(briefs, indent=2, default=str)}"
+    )
+
+
 def _build_user_content(
     query: str,
     context_block: str,
@@ -663,6 +778,11 @@ def _build_user_content(
         if has_context
         else "No relevant knowledge-base context was retrieved."
     )
+    farm_management_context = _build_farm_management_context(
+        farm_snapshot,
+        query,
+        conversation_history,
+    )
 
     return (
         f"{history_section}"
@@ -670,6 +790,9 @@ def _build_user_content(
         "------------------\n"
         "This was fetched from the node telemetry table for this response.\n"
         f"{json.dumps(farm_snapshot, indent=2, default=str)}\n\n"
+        "FARM-LEVEL PRIORITY BRIEF\n"
+        "-------------------------\n"
+        f"{farm_management_context}\n\n"
         "KNOWLEDGE-BASE CONTEXT\n"
         "----------------------\n"
         f"{context_status}\n\n"

@@ -1,11 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
-import { Leaf, Droplets, Sparkles, MessageCircleQuestion, ChevronRight, Activity, RotateCcw } from "lucide-react";
+import { Leaf, Droplets, Sparkles, MessageCircleQuestion, ChevronRight, Activity, RotateCcw, Bot, Send, UserRound, Plus } from "lucide-react";
 import { createClient } from "@supabase/supabase-js";
-import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
 import { SoilDoctorCharts } from "@/components/SoilDoctorCharts";
+import { AssistantMarkdown } from "@/components/chat/AssistantMarkdown";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || (process.env.VITE_SUPABASE_URL as string) || "";
@@ -13,12 +13,36 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || (process.env
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 type ActionType = "view" | "analyse" | "recommend" | "ask" | null;
+type ChatRole = "user" | "assistant";
+
+type ChatMessage = {
+  role: ChatRole;
+  content: string;
+};
+
+const CHAT_SESSION_STORAGE_KEY = "soil-doctor-conversation-id";
+const CHAT_GREETING: ChatMessage = {
+  role: "assistant",
+  content: "Hello! I'm your Soil Doctor. Ask me anything about your farm, crops, soil, or sensor readings. You can keep asking follow-up questions and I'll remember our conversation.",
+};
+
+const createConversationId = () => {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `soil-chat-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+};
+
+const getInitialConversationId = () => {
+  if (typeof window === "undefined") return createConversationId();
+  return sessionStorage.getItem(CHAT_SESSION_STORAGE_KEY) || createConversationId();
+};
 
 const ACTIONS = [
   { id: "view", title: "View Sensor Readings", description: "Get a summary of the current conditions on a specific farm section.", icon: Activity },
   { id: "analyse", title: "Analyse Conditions", description: "Understand what the current soil health means for your crops.", icon: Leaf },
   { id: "recommend", title: "Get Recommendations", description: "Receive practical steps to improve soil and crop health.", icon: Droplets },
-  { id: "ask", title: "Ask a Question", description: "Ask anything else about your farm or the sensor data.", icon: MessageCircleQuestion },
+  { id: "ask", title: "Ask a Question", description: "Start a conversation and ask follow-up questions about your farm or sensor data.", icon: MessageCircleQuestion },
 ] as const;
 
 const SoilDoctor = () => {
@@ -29,6 +53,11 @@ const SoilDoctor = () => {
   const [selectedAction, setSelectedAction] = useState<ActionType>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [customQuestion, setCustomQuestion] = useState("");
+  const [conversationId, setConversationId] = useState(getInitialConversationId);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([CHAT_GREETING]);
+  const [loadingChat, setLoadingChat] = useState(false);
+  const [chatHistoryLoaded, setChatHistoryLoaded] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
   
   const [loadingResult, setLoadingResult] = useState(false);
   const [result, setResult] = useState<string | null>(null);
@@ -56,6 +85,48 @@ const SoilDoctor = () => {
     fetchNodes();
   }, []);
 
+  useEffect(() => {
+    sessionStorage.setItem(CHAT_SESSION_STORAGE_KEY, conversationId);
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (selectedAction !== "ask" || chatHistoryLoaded) return;
+    let cancelled = false;
+
+    const loadChatHistory = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/chat/history/${conversationId}`);
+        if (!res.ok) return;
+
+        const data = await res.json();
+        const savedMessages = Array.isArray(data?.messages)
+          ? data.messages.filter(
+              (message: ChatMessage) =>
+                (message.role === "user" || message.role === "assistant") &&
+                typeof message.content === "string",
+            )
+          : [];
+
+        if (!cancelled && savedMessages.length > 0) {
+          setChatMessages([CHAT_GREETING, ...savedMessages]);
+        }
+      } catch (err) {
+        if (!cancelled) console.error("Failed to restore chat history", err);
+      } finally {
+        if (!cancelled) setChatHistoryLoaded(true);
+      }
+    };
+
+    loadChatHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [chatHistoryLoaded, conversationId, selectedAction]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages, loadingChat]);
+
   const handleActionSelect = (actionId: ActionType) => {
     setSelectedAction(actionId);
     if (actionId === "ask") {
@@ -81,8 +152,9 @@ const SoilDoctor = () => {
 
       const data = await res.json();
       setResult(data?.answer ?? "No analysis returned.");
-    } catch (err: any) {
-      setResult(`Sorry, we couldn't complete the analysis right now. (${err.message || "Connection error"})`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Connection error";
+      setResult(`Sorry, we couldn't complete the analysis right now. (${message})`);
     } finally {
       setLoadingResult(false);
     }
@@ -105,17 +177,66 @@ const SoilDoctor = () => {
     executeAnalysis(query);
   };
 
-  const handleQuestionSubmit = (e: React.FormEvent) => {
+  const handleQuestionSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!customQuestion.trim()) return;
-    executeAnalysis(customQuestion.trim());
+    const query = customQuestion.trim();
+    if (!query || loadingChat || !chatHistoryLoaded) return;
+
+    setChatMessages((messages) => [...messages, { role: "user", content: query }]);
+    setCustomQuestion("");
+    setLoadingChat(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/chat/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query,
+          conversation_id: conversationId,
+        }),
+      });
+
+      if (!res.ok) {
+        const detail = await res.text();
+        throw new Error(`Chat API error: ${res.status}${detail ? ` ${detail}` : ""}`);
+      }
+
+      const data = await res.json();
+      setChatMessages((messages) => [
+        ...messages,
+        {
+          role: "assistant",
+          content: data?.answer ?? "I couldn't generate an answer. Please try again.",
+        },
+      ]);
+    } catch (err: unknown) {
+      const message = err instanceof Error
+        ? err.message
+        : "Please check the backend connection and try again.";
+      setChatMessages((messages) => [
+        ...messages,
+        {
+          role: "assistant",
+          content: `Sorry, I couldn't answer that right now. ${message}`,
+        },
+      ]);
+    } finally {
+      setLoadingChat(false);
+    }
+  };
+
+  const startNewChat = () => {
+    const nextConversationId = createConversationId();
+    setConversationId(nextConversationId);
+    setChatMessages([CHAT_GREETING]);
+    setCustomQuestion("");
+    setChatHistoryLoaded(true);
   };
 
   const reset = () => {
     setStep("action");
     setSelectedAction(null);
     setSelectedNode(null);
-    setCustomQuestion("");
     setResult(null);
   };
 
@@ -218,20 +339,119 @@ const SoilDoctor = () => {
 
         {/* STEP 2 (Alternative): Ask Question */}
         {step === "question" && (
-          <div className="bg-card border border-border p-6 sm:p-8 rounded-xl shadow-sm max-w-2xl mx-auto">
-            <h2 className="text-xl font-bold mb-4">What's your question?</h2>
-            <form onSubmit={handleQuestionSubmit} className="space-y-4">
-              <textarea
-                value={customQuestion}
-                onChange={(e) => setCustomQuestion(e.target.value)}
-                placeholder="E.g., Which of my fields needs the most water right now?"
-                className="w-full min-h-[120px] rounded-lg border border-border bg-background p-4 text-base focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary resize-none"
-                autoFocus
-              />
-              <div className="flex justify-end gap-3">
-                <Button type="button" variant="outline" onClick={reset}>Cancel</Button>
-                <Button type="submit" disabled={!customQuestion.trim()}>Get Answer</Button>
+          <div className="bg-card border border-border rounded-xl shadow-sm max-w-4xl mx-auto min-h-[600px] overflow-hidden flex flex-col">
+            <div className="bg-secondary/50 border-b border-border p-4 sm:px-6 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                  <Bot className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <h2 className="font-semibold">Chat with Soil Doctor</h2>
+                  <p className="text-xs text-muted-foreground">Ask follow-up questions in the same conversation</p>
+                </div>
               </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={startNewChat}
+                disabled={loadingChat || !chatHistoryLoaded}
+                className="shrink-0"
+              >
+                <Plus className="h-4 w-4 mr-2" /> New Chat
+              </Button>
+            </div>
+
+            <div
+              className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5 min-h-[420px] max-h-[60vh]"
+              aria-live="polite"
+            >
+              {chatMessages.map((message, index) => {
+                const isUser = message.role === "user";
+                return (
+                  <div
+                    key={`${message.role}-${index}`}
+                    className={cn("flex items-start gap-3", isUser && "flex-row-reverse")}
+                  >
+                    <div
+                      className={cn(
+                        "flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
+                        isUser ? "bg-primary text-primary-foreground" : "bg-primary/10 text-primary",
+                      )}
+                    >
+                      {isUser ? <UserRound className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
+                    </div>
+                    <div
+                      className={cn(
+                        "max-w-[85%] rounded-2xl px-4 py-3 text-sm sm:text-base",
+                        isUser
+                          ? "bg-primary text-primary-foreground rounded-tr-sm whitespace-pre-wrap"
+                          : "bg-secondary text-foreground rounded-tl-sm",
+                      )}
+                    >
+                      {isUser ? (
+                        message.content
+                      ) : (
+                        <AssistantMarkdown content={message.content} />
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {!chatHistoryLoaded && (
+                <div className="flex items-start gap-3">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                    <Bot className="h-4 w-4" />
+                  </div>
+                  <div className="rounded-2xl rounded-tl-sm bg-secondary px-4 py-3 text-sm text-muted-foreground animate-pulse">
+                    Loading your conversation...
+                  </div>
+                </div>
+              )}
+
+              {chatHistoryLoaded && loadingChat && (
+                <div className="flex items-start gap-3">
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                    <Bot className="h-4 w-4" />
+                  </div>
+                  <div className="rounded-2xl rounded-tl-sm bg-secondary px-4 py-3 text-sm text-muted-foreground animate-pulse">
+                    Soil Doctor is thinking...
+                  </div>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            <form onSubmit={handleQuestionSubmit} className="border-t border-border bg-card p-4 sm:p-5">
+              <div className="flex items-end gap-3">
+                <textarea
+                  value={customQuestion}
+                  onChange={(e) => setCustomQuestion(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      e.currentTarget.form?.requestSubmit();
+                    }
+                  }}
+                  placeholder="Ask a question or continue the conversation..."
+                  aria-label="Message Soil Doctor"
+                  rows={2}
+                  disabled={loadingChat}
+                  className="flex-1 max-h-36 min-h-[52px] resize-none rounded-xl border border-border bg-background px-4 py-3 text-sm sm:text-base focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-60"
+                  autoFocus
+                />
+                <Button
+                  type="submit"
+                  size="icon"
+                  disabled={!customQuestion.trim() || loadingChat || !chatHistoryLoaded}
+                  aria-label="Send message"
+                  className="h-[52px] w-[52px] shrink-0 rounded-xl"
+                >
+                  <Send className="h-5 w-5" />
+                </Button>
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">Press Enter to send. Use Shift + Enter for a new line.</p>
             </form>
           </div>
         )}
@@ -268,9 +488,10 @@ const SoilDoctor = () => {
                     <p>Analyzing farm data...</p>
                   </div>
                 ) : (
-                  <div className="prose prose-sm sm:prose-base max-w-none prose-headings:font-bold prose-headings:tracking-tight prose-a:text-primary prose-p:leading-relaxed">
-                    <ReactMarkdown>{result || ""}</ReactMarkdown>
-                  </div>
+                  <AssistantMarkdown
+                    content={result || ""}
+                    className="sm:prose-base prose-headings:font-bold prose-headings:tracking-tight"
+                  />
                 )}
               </div>
             </div>

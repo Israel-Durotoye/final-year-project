@@ -78,6 +78,7 @@ from chromadb.config import Settings
 
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ.setdefault("USE_TF", "0")
 
 
 def _resolve_model_device() -> str:
@@ -104,7 +105,7 @@ logger = logging.getLogger(__name__)
 # Paths (mirrors rag_engine.py so both modules use the same ChromaDB store)
 _BACKEND_DIR  = Path(__file__).parent.parent
 _KB_DIR       = _BACKEND_DIR / "data" / "knowledge_base"
-_CHROMA_DIR   = _BACKEND_DIR / "data" / "chroma_db"
+_CHROMA_DIR   = _BACKEND_DIR / "data" / "agronomic_knowledge" / "chroma_db"
 
 _KB_DIR.mkdir(parents = True, exist_ok = True)
 _CHROMA_DIR.mkdir(parents = True, exist_ok = True)
@@ -928,7 +929,10 @@ class DocumentLoader:
 
         self._collection = client.get_or_create_collection(
             name = COLLECTION_NAME,
-            metadata = {"hnsw:space": "cosine"},
+            metadata = {
+                "hnsw:space": "cosine",
+                "embedding_model": EMBED_MODEL_NAME,
+            },
         )
         doc_count = self._collection.count()
         logger.info(
@@ -1110,4 +1114,4 @@ if __name__ == "__main__":
     print("━" * 60)
     print("\nKnowledge base is ready.")
     print("Start the API server with:")
-    print("uvicorn main:app --host 0.0.0.0 --port 8000\n")
+    print("uvicorn backend.main:app --host 0.0.0.0 --port 8000\n")

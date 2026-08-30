@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Sparkles, X, Send, Bot } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { AssistantMarkdown } from "@/components/chat/AssistantMarkdown";
 
 export const AiWidget = () => {
   const [open, setOpen] = useState(false);
@@ -41,9 +42,10 @@ export const AiWidget = () => {
         const data = await res.json();
         const answer = data.answer ?? data.result ?? data.reply ?? JSON.stringify(data);
         setMessages((m) => [...m, { role: "ai", text: String(answer) }]);
-      } catch (err: any) {
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
         console.error("Chat error", err);
-        setMessages((m) => [...m, { role: "ai", text: `Error: ${err?.message ?? String(err)}` }]);
+        setMessages((m) => [...m, { role: "ai", text: `Error: ${message}` }]);
       } finally {
         setIsLoading(false);
       }
@@ -90,7 +92,7 @@ export const AiWidget = () => {
                     ? "bg-primary text-primary-foreground rounded-br-sm"
                     : "bg-secondary text-secondary-foreground rounded-bl-sm"
                 )}>
-                  {m.text}
+                  {m.role === "user" ? m.text : <AssistantMarkdown content={m.text} compact />}
                 </div>
               </div>
             ))}

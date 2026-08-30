@@ -67,6 +67,10 @@ import chromadb
 from chromadb.config import Settings
 from rank_bm25 import BM25Okapi
 
+# SentenceTransformers uses PyTorch in this service. Avoid importing the
+# optional Transformers TensorFlow backend when RAGEngine is used directly.
+os.environ.setdefault("USE_TF", "0")
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -76,7 +80,8 @@ logger = logging.getLogger(__name__)
 # Paths — all relative to this file so the project is relocatable
 # ---------------------------------------------------------------------------
 _BACKEND_DIR  = Path(__file__).parent.parent
-_CHROMA_DIR   = _BACKEND_DIR / "data" / "chroma_db"
+_AGRONOMIC_KNOWLEDGE_DIR = _BACKEND_DIR / "data" / "agronomic_knowledge"
+_CHROMA_DIR   = _AGRONOMIC_KNOWLEDGE_DIR / "chroma_db"
 _CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
@@ -230,7 +235,10 @@ class RAGEngine:
             self._collection = self._chroma_client.get_or_create_collection(
                 name=COLLECTION_NAME,
                 # Cosine distance is appropriate for normalised sentence embeddings
-                metadata={"hnsw:space": "cosine"},
+                metadata={
+                    "hnsw:space": "cosine",
+                    "embedding_model": EMBED_MODEL_NAME,
+                },
             )
         except Exception as exc:
             raise RuntimeError(
@@ -439,8 +447,8 @@ class RAGEngine:
             candidates.append({
                 "chunk_id":    chunk_id,
                 "text":        result["documents"][0][i],
-                "source":      meta.get("source", "unknown"),
-                "page":        int(meta.get("page", 0)),
+                "source":      meta.get("source_name", meta.get("source", "unknown")),
+                "page":        int(meta.get("page_start", meta.get("page", 0))),
                 "dense_score": similarity,
             })
 
@@ -512,8 +520,8 @@ class RAGEngine:
             candidates.append({
                 "chunk_id":   chunk_id,
                 "text":       id_to_doc[chunk_id],
-                "source":     meta.get("source", "unknown"),
-                "page":       int(meta.get("page", 0)),
+                "source":     meta.get("source_name", meta.get("source", "unknown")),
+                "page":       int(meta.get("page_start", meta.get("page", 0))),
                 "bm25_score": float(normalised[idx]),
             })
 

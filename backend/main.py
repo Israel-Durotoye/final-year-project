@@ -9,10 +9,18 @@ Its only jobs are:
   4. Expose the health check
 
 To run:
-    uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 """
 
 from __future__ import annotations
+
+import os
+
+# The ML routes use TensorFlow/Keras, while SentenceTransformers only needs
+# Transformers' PyTorch backend. Prevent Transformers from importing tf_keras
+# after TensorFlow has already been initialised by the ML routes; that double
+# import registers TensorFlow monitoring metrics twice and aborts startup.
+os.environ.setdefault("USE_TF", "0")
 
 from dotenv import load_dotenv
 load_dotenv()
