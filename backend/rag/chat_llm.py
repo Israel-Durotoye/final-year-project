@@ -5,14 +5,15 @@ Responsibilities
 ----------------
 1. Receive retrieved/reranked knowledge chunks.
 2. Build a clean grounded prompt.
-3. Call AgentRouter as the sole LLM provider.
+3. Call AgentRouter first, with an optional Conduit fallback.
 4. Support OpenAI-compatible tool calling.
-5. Execute live-sensor and moisture-prediction tools when requested.
+5. Automatically add temporal history/forecast intelligence and support tools.
 6. Return a RAGResponse to the FastAPI layer.
 
-LLM provider
-------------
-AgentRouter only.
+LLM providers
+-------------
+AgentRouter is primary. Conduit is used only when configured and the primary
+provider is missing or fails with a retryable rate-limit/upstream error.
 
 Configuration comes from .env:
 
@@ -20,6 +21,9 @@ Configuration comes from .env:
     AGENTROUTER_AUTH_TOKEN
     AGENTROUTER_API_BASE_URL=https://agentrouter.org
     AGENTROUTER_MODEL=gpt-5.6-sol
+    CONDUIT_API_KEY
+    CONDUIT_API_BASE_URL=https://conduit.ozdoev.net/v1
+    CONDUIT_MODEL=claude-opus-4.8
 """
 
 from __future__ import annotations
@@ -52,17 +56,9 @@ from backend.rag import diagnostics, prescriptions
 from backend.utils.season import get_nigerian_season
 
 try:
-    from backend.ml import lstm_inference
+    from backend.ml import temporal_service
 except Exception:
-    lstm_inference = None
-
-try:
-    from backend.ml import lstm_suitability_inference, node_data, soil_health, lstm_crop_inference
-except Exception:
-    lstm_suitability_inference = None
-    node_data = None
-    soil_health = None
-    lstm_crop_inference = None
+    temporal_service = None
 
 
 if TYPE_CHECKING:
@@ -92,6 +88,21 @@ AGENTROUTER_API_BASE_URL = os.getenv(
     "https://agentrouter.org/v1",
 ).rstrip("/")
 
+CONDUIT_API_BASE_URL = os.getenv(
+    "CONDUIT_API_BASE_URL",
+    "https://conduit.ozdoev.net/v1",
+).rstrip("/")
+
+CONDUIT_MODEL = os.getenv(
+    "CONDUIT_MODEL",
+    "claude-opus-4.8",
+)
+
+CONDUIT_FALLBACK_ENABLED = os.getenv(
+    "CONDUIT_FALLBACK_ENABLED",
+    "true",
+).strip().casefold() not in {"0", "false", "no", "off"}
+
 MAX_CONTEXT_TOKENS = 4096 - 512 - DEFAULT_MAX_TOKENS
 
 API_RETRIES = 3
@@ -104,16 +115,14 @@ API_BACKOFF_MULTIPLIER = 2.0
 FARM_DATA_TABLE = os.getenv("FARM_DATA_TABLE", "capstone_dataset")
 FARM_SNAPSHOT_FETCH_LIMIT = 500
 
-# ============================================================================
 # SYSTEM INSTRUCTION
-# ============================================================================
 
 SYSTEM_INSTRUCTION = """
 You are Soil Doctor, a practical assistant for the farmer's actual farm.
 
-Every request includes a LIVE FARM SNAPSHOT fetched from the node telemetry
-table immediately before this response. Read it before answering. It is the
-source of truth for current node readings, currently planted crop, predicted ideal crop, season, and timestamps.
+Farm-analysis requests include a LIVE FARM SNAPSHOT fetched from node telemetry
+and a separate TEMPORAL FARM ANALYSIS. Read both before answering. Current
+readings are the source of truth for present conditions and planted crop.
 
 RULES
 1. Never assume a crop, growth stage, field condition, or sensor value. Never
@@ -124,17 +133,31 @@ RULES
    parameter-by-parameter sensor commentary or a dump of all measurements.
 3. If current readings are unavailable, say so plainly and do not replace them
    with an estimate. Do not ask for farm data you already have.
-4. **CROP RECOMMENDATION:** If the snapshot provides an `ai_predicted_ideal_crop` for a node, 
-   compare it against the `currently_planted_crop`. If they do not match, explicitly tell the farmer 
-   that the AI predicts the soil conditions are better suited for the predicted crop, and offer 
-   corrective measures to either adapt the soil for the current crop or suggest rotating crops.
-5. Treat supporting knowledge as agronomic guidance, not as live measurements.
+4. Treat supporting knowledge as agronomic guidance, not as live measurements.
    Never invent readings, predictions, sources, or citations.
-6. Lead with the finding, then give short practical next steps. State relevant
+5. Lead with the finding, then give short practical next steps. State relevant
    uncertainty when crop, soil type, weather, or a required measurement is absent.
-7. Use relevant conversation context only when it helps with the current question.
-8. Answer as if you simply know the farm. Never tell the user where your
+6. Use relevant conversation context only when it helps with the current question.
+7. Answer as if you simply know the farm. Never tell the user where your
    information comes from or how you obtained it. Present readings and guidance directly.
+
+TEMPORAL EVIDENCE RULES
+1. CURRENT FARM STATE describes the latest measured conditions.
+2. HISTORICAL/TEMPORAL ANALYSIS describes observations that already occurred.
+3. FUTURE SENSOR FORECAST contains model estimates beyond the latest timestamp.
+   Forecasts are uncertain and must never be reported as events that already happened.
+4. Never call a moisture rise confirmed rainfall unless an actual rainfall record
+   is supplied. `external_water_input` means rainfall or irrigation is unknown.
+5. Prioritize sustained trends over isolated noisy measurements. Treat flagged
+   impossible readings and one-sample spikes as data-quality concerns, not farm events.
+6. If the latest value is acceptable but history/forecast shows deterioration,
+   state the emerging risk. If a poor latest value is forecast to recover,
+   acknowledge both the current problem and uncertain recovery.
+7. If no trained forecast artifact is available, use current state plus the
+   deterministic historical analysis and never invent a forecast.
+8. The temporal layer reports sensor patterns, not fertiliser dosage, crop disease,
+   rainfall, irrigation, or leaching conclusions. Use relevant RAG evidence and
+   farm context before making agronomic interpretations.
 
 FARM-LEVEL RECOMMENDATION REASONING
 1. Before writing, silently classify the available parameters as:
@@ -168,10 +191,6 @@ FARM-LEVEL RECOMMENDATION REASONING
    correction is currently required. Give only one to three crop- and season-
    appropriate preventive or improvement actions supported by the available
    evidence. Never invent a problem so the report sounds useful.
-9. Keep crop-suitability comparison intact. A mismatch between the planted crop
-   and the ML-predicted ideal crop is a strategic consideration, not permission
-   to produce unrelated sensor-by-sensor commentary.
-
 DEFAULT PRESENTATION FOR FARM ASSESSMENTS
 - Start with a one- or two-sentence overall farm/node assessment. Do not start
   with a list of readings.
@@ -210,7 +229,7 @@ class NormalizedLLMResponse:
     """
     Internal normalized representation.
 
-    AgentRouter may return:
+    An OpenAI-compatible provider may return:
     - an OpenAI ChatCompletion object;
     - a dictionary containing an OpenAI-compatible response;
     - plain text.
@@ -222,6 +241,15 @@ class NormalizedLLMResponse:
     content: str = ""
     tool_calls: list[Any] | None = None
     raw: Any = None
+
+
+@dataclass
+class _LLMProvider:
+    """An internal OpenAI-compatible provider configuration."""
+
+    name: str
+    client: Any
+    model: str
 
 
 # ============================================================================
@@ -328,11 +356,25 @@ def _resolve_api_key(api_key: str | None = None) -> tuple[str, str]:
     )
 
 
+def _resolve_conduit_api_key(
+    api_key: str | None = None,
+) -> tuple[str, str] | None:
+    """Resolve the optional Conduit fallback key without making it mandatory."""
+    if not CONDUIT_FALLBACK_ENABLED:
+        return None
+    if api_key and api_key.strip():
+        return api_key.strip(), "argument"
+    value = os.getenv("CONDUIT_API_KEY")
+    if value and value.strip():
+        return value.strip(), "CONDUIT_API_KEY"
+    return None
+
+
 def _create_agentrouter_client(api_key: str) -> Any:
     """
     Create the OpenAI-compatible AgentRouter client.
 
-    AgentRouter is the only LLM provider used by this module.
+    AgentRouter remains the primary LLM provider.
     """
 
     if OpenAI is None:
@@ -363,24 +405,186 @@ def _create_agentrouter_client(api_key: str) -> Any:
     return OpenAI(**client_kwargs)
 
 
+def _create_conduit_client(api_key: str) -> Any:
+    """Create the OpenAI-compatible Conduit fallback client."""
+    if OpenAI is None:
+        raise RuntimeError("The OpenAI Python package is not installed.")
+    logger.info(
+        "Conduit fallback configured | base_url=%s | model=%s",
+        CONDUIT_API_BASE_URL,
+        CONDUIT_MODEL,
+    )
+    return OpenAI(
+        api_key=api_key,
+        base_url=CONDUIT_API_BASE_URL,
+        timeout=60.0,
+    )
+
+
+def _build_llm_providers(
+    *,
+    agentrouter_api_key: str | None,
+    agentrouter_model: str,
+    conduit_api_key: str | None = None,
+    conduit_model: str | None = None,
+) -> list[_LLMProvider]:
+    """Build the ordered primary/fallback provider chain."""
+    providers: list[_LLMProvider] = []
+    primary_error: EnvironmentError | None = None
+    try:
+        resolved_key, key_source = _resolve_api_key(agentrouter_api_key)
+        logger.info(
+            "Resolved AgentRouter API key source=%s key(masked)=%s",
+            key_source,
+            _mask_secret(resolved_key),
+        )
+        providers.append(
+            _LLMProvider(
+                name="AgentRouter",
+                client=_create_agentrouter_client(resolved_key),
+                model=agentrouter_model,
+            )
+        )
+    except EnvironmentError as exc:
+        primary_error = exc
+
+    fallback_key = _resolve_conduit_api_key(conduit_api_key)
+    if fallback_key is not None:
+        resolved_fallback_key, fallback_key_source = fallback_key
+        logger.info(
+            "Resolved Conduit API key source=%s key(masked)=%s",
+            fallback_key_source,
+            _mask_secret(resolved_fallback_key),
+        )
+        providers.append(
+            _LLMProvider(
+                name="Conduit",
+                client=_create_conduit_client(resolved_fallback_key),
+                model=conduit_model or CONDUIT_MODEL,
+            )
+        )
+    elif CONDUIT_FALLBACK_ENABLED:
+        logger.warning(
+            "Conduit fallback is enabled but unavailable because CONDUIT_API_KEY is not configured."
+        )
+
+    if not providers:
+        raise EnvironmentError(
+            "No LLM provider is configured. Set AGENTROUTER_API_KEY and/or CONDUIT_API_KEY."
+        ) from primary_error
+    if primary_error is not None:
+        logger.warning(
+            "AgentRouter is not configured; using Conduit as the active provider."
+        )
+    return providers
+
+
 # ============================================================================
 # LLM CALL / RETRY
 # ============================================================================
+
+def _is_retryable_provider_error(exc: BaseException) -> bool:
+    """Return True only for rate limits, timeouts, and upstream availability failures."""
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+
+    status_codes: set[int] = set()
+    for error in chain:
+        status = getattr(error, "status_code", None)
+        response = getattr(error, "response", None)
+        response_status = getattr(response, "status_code", None)
+        for value in (status, response_status):
+            try:
+                if value is not None:
+                    status_codes.add(int(value))
+            except (TypeError, ValueError):
+                continue
+    if status_codes & {401, 403, 404, 422}:
+        return False
+    if any(code in {402, 429} or 500 <= code <= 599 for code in status_codes):
+        return True
+
+    error_text = " ".join(str(error).casefold() for error in chain)
+    retryable_tokens = (
+        "402",
+        "429",
+        "500",
+        "502",
+        "503",
+        "504",
+        "rate limit",
+        "usage limit",
+        "quota exceeded",
+        "model limit",
+        "spending limit",
+        "insufficient credit",
+        "credit balance",
+        "overloaded",
+        "capacity",
+        "timeout",
+        "timed out",
+        "connection error",
+        "connection reset",
+        "temporarily unavailable",
+        "service unavailable",
+        "upstream unavailable",
+        "bad gateway",
+        "gateway timeout",
+    )
+    return any(token in error_text for token in retryable_tokens)
+
+
+def _is_immediate_failover_error(exc: BaseException) -> bool:
+    """Identify exhausted limits where retrying the same provider is wasteful."""
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    for error in chain:
+        status = getattr(error, "status_code", None)
+        response_status = getattr(getattr(error, "response", None), "status_code", None)
+        for value in (status, response_status):
+            try:
+                if value is not None and int(value) in {402, 429}:
+                    return True
+            except (TypeError, ValueError):
+                continue
+    error_text = " ".join(str(error).casefold() for error in chain)
+    return any(
+        token in error_text
+        for token in (
+            "402",
+            "429",
+            "rate limit",
+            "usage limit",
+            "quota exceeded",
+            "model limit",
+            "spending limit",
+            "insufficient credit",
+            "credit balance",
+        )
+    )
 
 def _call_llm_with_retry(
     client: Any,
     model: str,
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
+    *,
+    provider_name: str = "LLM provider",
     **kwargs: Any,
 ) -> Any:
     """
-    Call AgentRouter with retry handling.
+    Call one OpenAI-compatible provider with retry handling.
 
     IMPORTANT:
     This function does NOT convert the response into text.
 
-    It returns whatever the AgentRouter/OpenAI-compatible client returns.
+    It returns whatever the OpenAI-compatible client returns.
     That response is normalized later.
     """
 
@@ -403,7 +607,8 @@ def _call_llm_with_retry(
             )
 
             logger.info(
-                "AgentRouter request succeeded | response_type=%s",
+                "%s request succeeded | response_type=%s",
+                provider_name,
                 type(response).__name__,
             )
 
@@ -412,31 +617,17 @@ def _call_llm_with_retry(
         except Exception as exc:
             last_exception = exc
 
-            error_text = str(exc).lower()
+            transient = _is_retryable_provider_error(exc)
 
-            transient = any(
-                token in error_text
-                for token in (
-                    "429",
-                    "500",
-                    "502",
-                    "503",
-                    "504",
-                    "timeout",
-                    "timed out",
-                    "connection",
-                    "temporarily unavailable",
-                )
-            )
-
-            if not transient or attempt >= API_RETRIES:
+            if _is_immediate_failover_error(exc) or not transient or attempt >= API_RETRIES:
                 raise RuntimeError(
-                    f"AgentRouter API call failed: {exc}"
+                    f"{provider_name} API call failed: {exc}"
                 ) from exc
 
             logger.warning(
-                "Transient AgentRouter error "
+                "Transient %s error "
                 "(attempt %d/%d): %s. Retrying in %.1fs.",
+                provider_name,
                 attempt,
                 API_RETRIES,
                 exc,
@@ -450,8 +641,53 @@ def _call_llm_with_retry(
             )
 
     raise RuntimeError(
-        f"AgentRouter API call failed after retries: {last_exception}"
+        f"{provider_name} API call failed after retries: {last_exception}"
     )
+
+
+def _call_with_provider_fallback(
+    providers: list[_LLMProvider],
+    messages: list[dict[str, Any]],
+    *,
+    active_index: int = 0,
+    tools: list[dict[str, Any]] | None = None,
+    **kwargs: Any,
+) -> tuple[Any, int]:
+    """Call the active provider and fail over only for retryable failures."""
+    if not providers:
+        raise RuntimeError("No LLM providers are available.")
+    last_error: Exception | None = None
+    for index in range(active_index, len(providers)):
+        provider = providers[index]
+        try:
+            response = _call_llm_with_retry(
+                provider.client,
+                provider.model,
+                messages,
+                tools=tools,
+                provider_name=provider.name,
+                **kwargs,
+            )
+            return response, index
+        except Exception as exc:
+            last_error = exc
+            has_fallback = index + 1 < len(providers)
+            retryable = _is_retryable_provider_error(exc)
+            if retryable and not has_fallback and provider.name == "AgentRouter":
+                raise RuntimeError(
+                    f"{exc} Conduit fallback is not configured; set CONDUIT_API_KEY "
+                    "in .env and restart the backend."
+                ) from exc
+            if not has_fallback or not retryable:
+                raise
+            next_provider = providers[index + 1]
+            logger.warning(
+                "%s is unavailable after retries; switching this generation to %s model=%s.",
+                provider.name,
+                next_provider.name,
+                next_provider.model,
+            )
+    raise RuntimeError(f"All configured LLM providers failed: {last_error}") from last_error
 
 
 # ============================================================================
@@ -460,7 +696,7 @@ def _call_llm_with_retry(
 
 def _normalize_llm_response(response: Any) -> NormalizedLLMResponse:
     """
-    Normalize AgentRouter responses.
+    Normalize OpenAI-compatible provider responses.
 
     Supported formats:
 
@@ -490,7 +726,7 @@ def _normalize_llm_response(response: Any) -> NormalizedLLMResponse:
         text = response.strip()
 
         logger.info(
-            "AgentRouter returned plain-text response | length=%d",
+            "LLM provider returned plain-text response | length=%d",
             len(text),
         )
 
@@ -564,7 +800,7 @@ def _normalize_llm_response(response: Any) -> NormalizedLLMResponse:
         )
 
     logger.error(
-        "Unsupported AgentRouter response type: %s",
+        "Unsupported LLM provider response type: %s",
         type(response).__name__,
     )
 
@@ -731,12 +967,199 @@ def _build_farm_management_context(
     )
 
 
+def _temporal_node_ids(
+    farm_snapshot: dict[str, Any],
+    query: str,
+    conversation_history: list[dict[str, str]] | None = None,
+    requested_node_id: str | None = None,
+) -> list[str]:
+    """Resolve an explicit node, or active nodes for a farm-analysis request."""
+    import re
+
+    nodes = [
+        node
+        for node in farm_snapshot.get("nodes", [])
+        if isinstance(node, dict) and str(node.get("node_id") or "").strip()
+    ]
+    known = {str(node["node_id"]).strip().upper(): str(node["node_id"]).strip() for node in nodes}
+    if requested_node_id:
+        normalized = requested_node_id.strip().upper().replace("-", "_").replace(" ", "_")
+        return [known.get(normalized, requested_node_id.strip())]
+
+    recent = " ".join(
+        str(message.get("content", ""))
+        for message in (conversation_history or [])[-4:]
+        if isinstance(message, dict)
+    )
+    reference = f"{query} {recent}"
+    explicit: list[str] = []
+    for match in re.findall(r"\bNODE[_ -]?\d+\b", reference, flags=re.IGNORECASE):
+        normalized = match.upper().replace("-", "_").replace(" ", "_")
+        resolved = known.get(normalized, normalized)
+        if resolved not in explicit:
+            explicit.append(resolved)
+    if explicit:
+        return explicit
+
+    farm_analysis_terms = (
+        "farm",
+        "field",
+        "sensor",
+        "soil condition",
+        "current condition",
+        "latest data",
+        "analyse",
+        "analyze",
+        "recommend",
+        "forecast",
+        "trend",
+        "history",
+        "wet",
+        "dry",
+        "moisture",
+        "nutrient",
+        "nitrogen",
+        "phosphorus",
+        "potassium",
+    )
+    if any(term in query.casefold() for term in farm_analysis_terms):
+        return [str(node["node_id"]).strip() for node in nodes]
+    return []
+
+
+def _get_automatic_temporal_context(
+    farm_snapshot: dict[str, Any],
+    query: str,
+    conversation_history: list[dict[str, str]] | None = None,
+    requested_node_id: str | None = None,
+) -> dict[str, Any]:
+    """Acquire temporal intelligence before the LLM call, with graceful fallback."""
+    node_ids = _temporal_node_ids(
+        farm_snapshot,
+        query,
+        conversation_history,
+        requested_node_id,
+    )
+    if not node_ids:
+        return {
+            "status": "not_requested",
+            "nodes": {},
+            "reason": "The question does not request live farm or node analysis.",
+        }
+    if temporal_service is None:
+        return {
+            "status": "unavailable",
+            "nodes": {},
+            "reason": "Temporal analysis components are unavailable.",
+        }
+    try:
+        return temporal_service.get_multi_node_temporal_intelligence(node_ids)
+    except Exception as exc:
+        logger.warning("Automatic temporal analysis failed: %s", exc)
+        return {
+            "status": "unavailable",
+            "nodes": {},
+            "reason": "Temporal history could not be analyzed for this response.",
+        }
+
+
+def _split_temporal_prompt_context(
+    temporal_context: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Keep observed history and future model estimates in separate prompt blocks."""
+    payload = temporal_context or {"status": "not_requested", "nodes": {}}
+    historical: dict[str, Any] = {
+        "status": payload.get("status"),
+        "nodes_requested": payload.get("nodes_requested", 0),
+        "nodes_analyzed": payload.get("nodes_analyzed", 0),
+        "nodes": {},
+    }
+    future: dict[str, Any] = {
+        "status": payload.get("status"),
+        "nodes": {},
+    }
+    for node_id, result in (payload.get("nodes") or {}).items():
+        if not isinstance(result, dict):
+            continue
+        compact_sensors: dict[str, Any] = {}
+        for sensor, metrics in (result.get("historical_analysis") or {}).items():
+            if not isinstance(metrics, dict):
+                continue
+            compact_sensors[sensor] = {
+                key: metrics.get(key)
+                for key in (
+                    "current",
+                    "rolling_mean",
+                    "trend",
+                    "slope_per_hour",
+                    "percentage_change",
+                    "consecutive_rising_samples",
+                    "consecutive_falling_samples",
+                    "event",
+                    "samples",
+                )
+                if key in metrics
+            }
+        quality = result.get("data_quality") or {}
+        compact_quality = {
+            key: quality.get(key)
+            for key in (
+                "missing_values",
+                "gap_count",
+                "is_irregular",
+                "possible_anomalies",
+                "impossible_readings",
+                "latest_sample_age_minutes",
+                "stale",
+                "analysis_filter_policy",
+            )
+            if key in quality
+        }
+        for key in ("possible_anomalies", "impossible_readings"):
+            if isinstance(compact_quality.get(key), list):
+                compact_quality[key] = compact_quality[key][:3]
+        historical["nodes"][node_id] = {
+            "status": result.get("status"),
+            "history": result.get("history"),
+            "data_quality": compact_quality,
+            "historical_analysis": compact_sensors,
+            "events": (result.get("events") or [])[:8],
+            "cross_sensor_observations": result.get("cross_sensor_observations"),
+        }
+        model = result.get("model") or {}
+        future["nodes"][node_id] = {
+            "forecast_status": result.get("forecast_status"),
+            "forecast": result.get("forecast"),
+            "forecast_trends": result.get("forecast_trends"),
+            "uncertainty_note": result.get("uncertainty_note"),
+            "model": {
+                key: model.get(key)
+                for key in (
+                    "status",
+                    "deployed",
+                    "name",
+                    "sequence_length",
+                    "forecast_steps",
+                    "feature_order",
+                    "trained_at",
+                )
+                if key in model
+            },
+            "forecast_unavailable_reason": result.get("forecast_unavailable_reason"),
+        }
+    if payload.get("reason"):
+        historical["reason"] = payload["reason"]
+        future["reason"] = payload["reason"]
+    return historical, future
+
+
 def _build_user_content(
     query: str,
     context_block: str,
     has_context: bool,
     farm_snapshot: dict[str, Any],
     conversation_history: list[dict[str, str]] | None = None,
+    temporal_context: dict[str, Any] | None = None,
 ) -> str:
     """Construct the user-facing LLM input."""
 
@@ -783,6 +1206,7 @@ def _build_user_content(
         query,
         conversation_history,
     )
+    historical_context, future_context = _split_temporal_prompt_context(temporal_context)
 
     return (
         f"{history_section}"
@@ -790,6 +1214,14 @@ def _build_user_content(
         "------------------\n"
         "This was fetched from the node telemetry table for this response.\n"
         f"{json.dumps(farm_snapshot, indent=2, default=str)}\n\n"
+        "TEMPORAL FARM ANALYSIS\n"
+        "----------------------\n"
+        "These are observed historical patterns, not predictions.\n"
+        f"{json.dumps(historical_context, indent=2, default=str)}\n\n"
+        "FUTURE SENSOR FORECAST\n"
+        "----------------------\n"
+        "These are uncertain model estimates beyond the latest reading. A null forecast is not evidence of stability.\n"
+        f"{json.dumps(future_context, indent=2, default=str)}\n\n"
         "FARM-LEVEL PRIORITY BRIEF\n"
         "-------------------------\n"
         f"{farm_management_context}\n\n"
@@ -894,15 +1326,10 @@ def _get_farm_snapshot() -> dict[str, Any]:
         for row in rows:
             node_id = str(row.get("Node_ID") or "").strip()
             if node_id and node_id not in latest_by_node:
-                ideal_crop = None
-                if lstm_crop_inference is not None:
-                    ideal_crop = lstm_crop_inference.predict_ideal_crop(node_id)
-                
                 latest_by_node[node_id] = {
                     "node_id": node_id,
                     "timestamp_utc": row.get("Timestamp"),
                     "currently_planted_crop": row.get("Target_Crop"),
-                    "ai_predicted_ideal_crop": ideal_crop or "Unknown",
                     "season": get_nigerian_season(row.get("Timestamp")),
                     "nitrogen_mg_kg": row.get("Nitrogen_mg_k"),
                     "phosphorus_mg_kg": row.get("Phosphorus_m"),
@@ -1002,196 +1429,10 @@ def _get_live_sensor_data(node_id: str) -> dict[str, Any]:
             "reason": "Unable to retrieve sensor data.",
         }
 
+# The former moisture-only and crop-suitability tools are retained in their
+# legacy backend/ml modules for API/history compatibility, but are intentionally
+# absent from Soil Doctor's active tool and automatic reasoning paths.
 
-# ============================================================================
-# TOOL: MOISTURE PREDICTION
-# ============================================================================
-
-def _run_moisture_prediction(node_id: str) -> str:
-    """Run the deployed moisture prediction model."""
-
-    if create_client is None:
-        return json.dumps({
-            "status": "model_unavailable",
-            "message": "Supabase package is not installed.",
-        })
-
-    if lstm_inference is None:
-        return json.dumps({
-            "status": "model_unavailable",
-            "message": "LSTM inference module is unavailable.",
-        })
-
-    supabase_url = (
-        os.getenv("SUPABASE_URL")
-        or os.getenv("VITE_SUPABASE_URL")
-    )
-
-    supabase_key = (
-        os.getenv("SUPABASE_KEY")
-        or os.getenv("VITE_SUPABASE_ANON_KEY")
-    )
-
-    if not supabase_url or not supabase_key:
-        return json.dumps({
-            "status": "offline",
-            "message": "Sensor database is unavailable.",
-        })
-
-    required_rows = 48
-
-    db_columns = [
-        "Nitrogen_mg_k",
-        "Phosphorus_m",
-        "Potassium_mg_",
-        "Moisture_%",
-        "Temperature_C",
-    ]
-
-    try:
-        client: Client = create_client(
-            supabase_url,
-            supabase_key,
-        )
-
-        result = (
-            client
-            .table(FARM_DATA_TABLE)
-            .select(", ".join(["Timestamp"] + db_columns))
-            .eq("Node_ID", node_id)
-            .order("Timestamp", desc=True)
-            .limit(required_rows)
-            .execute()
-        )
-
-        rows = getattr(result, "data", None) or []
-
-        if len(rows) < required_rows:
-            return json.dumps({
-                "status": "insufficient_data",
-                "message": (
-                    f"Need {required_rows} historical readings; "
-                    f"only {len(rows)} were found."
-                ),
-            })
-
-        rows = list(reversed(rows))
-
-        sensor_matrix: list[list[float]] = []
-
-        for row in rows:
-            sensor_matrix.append([
-                6.5,
-                float(row.get("Nitrogen_mg_k") or 0.0),
-                float(row.get("Phosphorus_m") or 0.0),
-                float(row.get("Potassium_mg_") or 0.0),
-                float(row.get("Moisture_%") or 0.0),
-                float(row.get("Temperature_C") or 0.0),
-                0.5,
-                2.0,
-            ])
-
-        prediction = lstm_inference.execute_moisture_prediction(
-            sensor_matrix
-        )
-
-        return json.dumps({
-            "status": "success",
-            "node_id": node_id,
-            "predicted_moisture_pct": round(
-                float(prediction),
-                4,
-            ),
-            "forecast_horizon": "24 hours",
-            "model": "LSTM",
-        })
-
-    except FileNotFoundError:
-        return json.dumps({
-            "status": "model_unavailable",
-            "message": "Moisture prediction model artefacts are unavailable.",
-        })
-
-    except Exception as exc:
-        logger.exception(
-            "Moisture prediction failed for %s",
-            node_id,
-        )
-
-        return json.dumps({
-            "status": "error",
-            "message": f"Prediction failed: {str(exc)[:120]}",
-        })
-
-
-# ============================================================================
-# TOOL: SOIL SUITABILITY CLASSIFICATION
-# ============================================================================
-
-def _classify_soil_suitability(node_id: str) -> str:
-    """
-    Judge whether a node's soil is Good / Fair / Poor for its dedicated crop.
-
-    Uses the trained LSTM classifier when a full 24-reading window and model
-    artefacts are available; otherwise falls back to direct threshold scoring on
-    the latest reading so the tool always returns a verdict.
-    """
-
-    if node_data is None or soil_health is None:
-        return json.dumps({
-            "status": "unavailable",
-            "message": "Soil suitability components are not installed.",
-        })
-
-    window = node_data.fetch_node_window(node_id, limit=24)
-
-    if window["status"] == "unavailable":
-        return json.dumps({
-            "status": "unavailable",
-            "message": window.get("reason", "Sensor data unavailable."),
-        })
-
-    if window["status"] == "insufficient_data" or window.get("count", 0) == 0:
-        return json.dumps({
-            "status": "no_data",
-            "message": window.get("message", f"No sensor data found for {node_id}."),
-        })
-
-    crop = window["crop"]
-    latest = window["latest"]
-
-    threshold_label, threshold_score, per_param = soil_health.score_reading(latest, crop)
-
-    result: dict[str, Any] = {
-        "status": "success",
-        "node_id": node_id,
-        "crop": crop,
-        "readings_used": window["count"],
-        "suitability": threshold_label,
-        "score": threshold_score,
-        "parameter_scores": per_param,
-        "source": "threshold",
-    }
-
-    # Prefer the trained model verdict when we have a full window and artefacts.
-    if window["count"] >= 24 and lstm_suitability_inference is not None:
-        try:
-            matrix = node_data.build_feature_matrix(window["rows"])
-            prediction = lstm_suitability_inference.classify_soil_suitability(matrix)
-            result["suitability"] = prediction["label"]
-            result["model_confidence"] = prediction["confidence"]
-            result["class_probabilities"] = prediction["class_probabilities"]
-            result["threshold_reference"] = threshold_label
-            result["source"] = "model"
-        except FileNotFoundError:
-            logger.info("Suitability model not trained; using threshold verdict for %s.", node_id)
-        except Exception as exc:
-            logger.warning("Suitability inference failed for %s: %s", node_id, exc)
-
-    return json.dumps(result, default=str)
-
-
-# ============================================================================
 # TOOL DEFINITIONS
 # ============================================================================
 
@@ -1221,32 +1462,10 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "execute_moisture_prediction",
+            "name": "analyze_temporal_conditions",
             "description": (
-                "Predict soil moisture approximately 24 hours into "
-                "the future using the latest 48 historical readings."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "node_id": {
-                        "type": "string",
-                        "description": (
-                            "Sensor node identifier, e.g. NODE_01."
-                        ),
-                    }
-                },
-                "required": ["node_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "classify_soil_suitability",
-            "description": (
-                "Assess whether a node's soil is Good, Fair, or Poor for the "
-                "crop that node is dedicated to, using its recent readings."
+                "Retrieve audited historical trends, temporal events, data quality, "
+                "and any available multivariate sensor forecast for one node."
             ),
             "parameters": {
                 "type": "object",
@@ -1326,11 +1545,16 @@ def _execute_tool(
         result = _get_live_sensor_data(node_id)
         return json.dumps(result)
 
-    if tool_name == "execute_moisture_prediction":
-        return _run_moisture_prediction(node_id)
-
-    if tool_name == "classify_soil_suitability":
-        return _classify_soil_suitability(node_id)
+    if tool_name == "analyze_temporal_conditions":
+        if temporal_service is None:
+            return json.dumps({
+                "status": "unavailable",
+                "message": "Temporal analysis components are unavailable.",
+            })
+        return json.dumps(
+            temporal_service.get_temporal_farm_intelligence(node_id),
+            default=str,
+        )
 
     return json.dumps({
         "status": "error",
@@ -1420,8 +1644,11 @@ def generate_rag_response(
     retrieved_chunks: list["RetrievedChunk"],
     *,
     conversation_history: list[dict[str, str]] | None = None,
+    node_id: str | None = None,
     model_name: str = DEFAULT_MODEL,
     api_key: str | None = None,
+    fallback_api_key: str | None = None,
+    fallback_model_name: str | None = None,
     temperature: float = DEFAULT_TEMPERATURE,
     max_output_tokens: int = DEFAULT_MAX_TOKENS,
     rerank_threshold: float = RERANK_SCORE_THRESHOLD,
@@ -1429,7 +1656,7 @@ def generate_rag_response(
     """
     Generate the final Soil Doctor answer.
 
-    AgentRouter is the sole LLM provider.
+    AgentRouter is primary; configured retryable failures fall back to Conduit.
     """
 
     start_time = time.perf_counter()
@@ -1473,6 +1700,18 @@ def generate_rag_response(
         farm_snapshot.get("node_count", 0),
     )
 
+    temporal_context = _get_automatic_temporal_context(
+        farm_snapshot,
+        user_query,
+        conversation_history,
+        node_id,
+    )
+    logger.info(
+        "Temporal context | status=%s | nodes=%d",
+        temporal_context.get("status"),
+        temporal_context.get("nodes_analyzed", 0),
+    )
+
     # ------------------------------------------------------------------
     # 3. Build the LLM messages
     # ------------------------------------------------------------------
@@ -1483,6 +1722,7 @@ def generate_rag_response(
         bool(qualifying_chunks),
         farm_snapshot,
         conversation_history,
+        temporal_context,
     )
 
     messages: list[dict[str, Any]] = [
@@ -1497,40 +1737,38 @@ def generate_rag_response(
     ]
 
     # ------------------------------------------------------------------
-    # 4. Resolve credentials and create AgentRouter client
+    # 4. Resolve the ordered primary/fallback provider chain
     # ------------------------------------------------------------------
-
-    resolved_key, key_source = _resolve_api_key(api_key)
-
-    logger.info(
-        "Resolved AgentRouter API key source=%s key(masked)=%s",
-        key_source,
-        _mask_secret(resolved_key),
-    )
-
-    client = _create_agentrouter_client(
-        resolved_key
-    )
 
     # Always use the model configured in .env unless an explicit model
     # argument was supplied.
     model = model_name or DEFAULT_MODEL
+    providers = _build_llm_providers(
+        agentrouter_api_key=api_key,
+        agentrouter_model=model,
+        conduit_api_key=fallback_api_key,
+        conduit_model=fallback_model_name,
+    )
+    active_provider_index = 0
+    active_provider = providers[active_provider_index]
 
     logger.info(
-        "Starting LLM generation | model=%s | context_chunks=%d",
-        model,
+        "Starting LLM generation | provider=%s | model=%s | context_chunks=%d | fallback_configured=%s",
+        active_provider.name,
+        active_provider.model,
         len(qualifying_chunks),
+        len(providers) > 1,
     )
 
     # ------------------------------------------------------------------
-    # 5. First AgentRouter call
+    # 5. First provider call
     # ------------------------------------------------------------------
 
     try:
-        response = _call_llm_with_retry(
-            client,
-            model,
+        response, active_provider_index = _call_with_provider_fallback(
+            providers,
             messages,
+            active_index=active_provider_index,
             tools=TOOLS,
             temperature=temperature,
             max_tokens=max_output_tokens,
@@ -1539,11 +1777,11 @@ def generate_rag_response(
 
     except Exception as exc:
         logger.exception(
-            "AgentRouter generation failed."
+            "LLM generation failed across the configured provider chain."
         )
 
         raise RuntimeError(
-            f"AgentRouter generation failed: {exc}"
+            f"LLM generation failed: {exc}"
         ) from exc
 
     # ------------------------------------------------------------------
@@ -1553,8 +1791,9 @@ def generate_rag_response(
     normalized = _normalize_llm_response(response)
 
     logger.info(
-        "AgentRouter response normalized | "
+        "%s response normalized | "
         "type=%s | content_length=%d | tool_calls=%d",
+        providers[active_provider_index].name,
         type(response).__name__,
         len(normalized.content),
         len(normalized.tool_calls or []),
@@ -1639,7 +1878,7 @@ def generate_rag_response(
                 arguments = {}
 
             logger.info(
-                "Executing AgentRouter tool: %s",
+                "Executing LLM-requested tool: %s",
                 tool_name,
             )
 
@@ -1663,10 +1902,10 @@ def generate_rag_response(
 
         if tool_results_added:
             try:
-                response2 = _call_llm_with_retry(
-                    client,
-                    model,
+                response2, active_provider_index = _call_with_provider_fallback(
+                    providers,
                     messages,
+                    active_index=active_provider_index,
                     tools=TOOLS,
                     tool_choice="none",
                     temperature=temperature,
@@ -1682,7 +1921,7 @@ def generate_rag_response(
 
             except Exception as exc:
                 logger.exception(
-                    "AgentRouter second call after tool execution failed."
+                    "LLM second call after tool execution failed."
                 )
 
                 # If the first response contained usable text, preserve it.
@@ -1690,7 +1929,7 @@ def generate_rag_response(
 
                 if not answer_text:
                     raise RuntimeError(
-                        f"AgentRouter tool follow-up failed: {exc}"
+                        f"LLM tool follow-up failed: {exc}"
                     ) from exc
 
     # ------------------------------------------------------------------
@@ -1699,7 +1938,8 @@ def generate_rag_response(
 
     if not answer_text:
         logger.warning(
-            "AgentRouter returned no usable answer."
+            "%s returned no usable answer.",
+            providers[active_provider_index].name,
         )
 
         answer_text = (
@@ -1708,12 +1948,14 @@ def generate_rag_response(
         )
 
     elapsed = time.perf_counter() - start_time
+    active_provider = providers[active_provider_index]
 
     logger.info(
-        "RAG response generated | time=%.3fs | model=%s | "
+        "RAG response generated | time=%.3fs | provider=%s | model=%s | "
         "grounded=%s | answer_length=%d",
         elapsed,
-        model,
+        active_provider.name,
+        active_provider.model,
         bool(qualifying_chunks) and not was_truncated,
         len(answer_text),
     )
@@ -1731,7 +1973,7 @@ def generate_rag_response(
             elapsed,
             3,
         ),
-        model_name=model,
+        model_name=active_provider.model,
         grounded=(
             bool(qualifying_chunks)
             and not was_truncated

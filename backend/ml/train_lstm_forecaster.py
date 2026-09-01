@@ -19,6 +19,7 @@ from typing import Any
 
 import joblib
 import numpy as np
+from dotenv import load_dotenv
 from sklearn.preprocessing import MinMaxScaler
 
 from backend.ml.lstm_forecaster import ARTIFACT_DIR
@@ -31,6 +32,9 @@ from backend.ml.temporal_data import (
     parse_timestamp,
     prepare_temporal_rows,
 )
+
+
+load_dotenv()
 
 
 FORECAST_STEPS = int(os.getenv("TEMPORAL_FORECAST_STEPS", "48"))
@@ -415,6 +419,18 @@ def train(
         json.dump(metadata, handle, indent=2)
     temporary_metadata.replace(output_dir / "metadata.json")
     return metadata
+
+
+def run_training_pipeline() -> dict[str, Any]:
+    """Train from real Supabase telemetry for use by the background API route."""
+    rows = fetch_all_telemetry()
+    return train(
+        rows,
+        provenance="real_telemetry",
+        output_dir=ARTIFACT_DIR,
+        sequence_length=DEFAULT_SEQUENCE_LENGTH,
+        forecast_steps=FORECAST_STEPS,
+    )
 
 
 def main() -> None:

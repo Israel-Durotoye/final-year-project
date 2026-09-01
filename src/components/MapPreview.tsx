@@ -1,12 +1,18 @@
 import { useState, useMemo, useEffect } from "react";
-import { MapContainer, TileLayer, Marker, Tooltip, Polyline, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Tooltip, Polygon, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { Layers, Map as MapIcon, Maximize } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  getMapCoordinate,
+  isMapNodeOnline,
+  orderCoordinatesAroundCenter,
+  SpatialNode,
+} from "@/lib/mapSpatial";
 
 interface Props {
-  nodes: any[];
+  nodes: SpatialNode[];
   height?: string;
   selectedId?: string;
   onSelect?: (id: string) => void;
@@ -15,11 +21,27 @@ interface Props {
 }
 
 // Center map helper component
-const MapCenterer = ({ center, zoom }: { center: [number, number], zoom: number }) => {
+const DEFAULT_CENTER: [number, number] = [8.48225, 4.54225];
+
+const MapViewport = ({ coordinates }: { coordinates: [number, number][] }) => {
   const map = useMap();
+
   useEffect(() => {
-    map.setView(center, zoom);
-  }, [center, zoom, map]);
+    const frameId = window.requestAnimationFrame(() => {
+      map.invalidateSize({ pan: false });
+
+      if (coordinates.length === 0) {
+        map.setView(DEFAULT_CENTER, 13);
+      } else if (coordinates.length === 1) {
+        map.setView(coordinates[0], 17);
+      } else {
+        map.fitBounds(L.latLngBounds(coordinates), { padding: [48, 48], maxZoom: 17 });
+      }
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [coordinates, map]);
+
   return null;
 };
 
@@ -55,16 +77,26 @@ export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, inter
     return nodes.map((n) => {
       // Prioritize node_id. If a table has an 'id' primary key, we don't want it to override the node_id
       const id = n.Node_ID || n.id;
-      const lat = Number(n.Latitude ?? n.lat);
-      const lng = Number(n.Longitude ?? n.lng);
-      const isOnline = true; // simulation nodes are always online
-      return { ...n, id: String(id), lat, lng, isOnline };
-    }).filter((n) => !isNaN(n.lat) && !isNaN(n.lng));
+      const coordinate = getMapCoordinate(n);
+      if (!coordinate || !id) return null;
+      return {
+        ...n,
+        id: String(id),
+        lat: coordinate[0],
+        lng: coordinate[1],
+        isOnline: isMapNodeOnline(n),
+      };
+    }).filter((node): node is NonNullable<typeof node> => node !== null);
   }, [nodes]);
 
-  const defaultCenter: [number, number] = normalizedNodes.length > 0 
-    ? [normalizedNodes[0].lat, normalizedNodes[0].lng] 
-    : [36.7378, -119.7871]; // Default to Fresno area if empty
+  const coordinates = useMemo(
+    () => normalizedNodes.map((node) => [node.lat, node.lng] as [number, number]),
+    [normalizedNodes],
+  );
+  const perimeterCoordinates = useMemo(
+    () => orderCoordinatesAroundCenter(coordinates),
+    [coordinates],
+  );
 
   // Custom marker icon using HTML
   const createMarkerIcon = (isSelected: boolean, isOnline: boolean) => {
@@ -97,20 +129,18 @@ export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, inter
     });
   };
 
-  const coordinates = normalizedNodes.map(n => [n.lat, n.lng] as [number, number]);
-
   return (
     <div className={cn("relative w-full rounded-xl border border-border overflow-hidden isolate", height)}>
       <MapContainer
-        center={defaultCenter}
-        zoom={normalizedNodes.length > 0 ? 15 : 4}
+        center={DEFAULT_CENTER}
+        zoom={13}
         className="h-full w-full z-0"
         zoomControl={interactive}
         dragging={interactive}
         scrollWheelZoom={interactive}
         doubleClickZoom={interactive}
       >
-        <MapCenterer center={defaultCenter} zoom={normalizedNodes.length > 0 ? 15 : 4} />
+        <MapViewport coordinates={coordinates} />
         {interactive && <ZoomResetControl coordinates={coordinates} />}
         
         {mapStyle === "street" ? (
@@ -126,10 +156,18 @@ export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, inter
         )}
 
         {/* Dotted lines connecting nodes */}
-        {coordinates.length > 1 && (
-          <Polyline 
-            positions={coordinates} 
-            pathOptions={{ color: "hsl(var(--primary))", dashArray: "6, 8", weight: 2, opacity: 0.8, interactive: false }} 
+        {perimeterCoordinates.length > 2 && (
+          <Polygon
+            positions={perimeterCoordinates}
+            pathOptions={{
+              color: "hsl(var(--primary))",
+              dashArray: "6, 8",
+              weight: 2,
+              opacity: 0.9,
+              fillColor: "hsl(var(--primary))",
+              fillOpacity: 0.06,
+              interactive: false,
+            }}
           />
         )}
 

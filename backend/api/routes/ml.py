@@ -2,10 +2,11 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 import logging
 
-from backend.ml import lstm_anomaly_trainer, lstm_suitability_trainer, node_data, soil_health
+from backend.ml import node_data, soil_health, temporal_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+LEGACY_SUITABILITY_SEQUENCE_LENGTH = 24
 
 
 @router.post("/ml/train-anomaly-model", tags=["Machine Learning"])
@@ -16,6 +17,8 @@ async def train_anomaly_model(background_tasks: BackgroundTasks):
     logger.info("Received request to train anomaly model. Spawning background task...")
 
     # We run it in the background so the HTTP request completes immediately
+    from backend.ml import lstm_anomaly_trainer
+
     background_tasks.add_task(lstm_anomaly_trainer.run_training_pipeline)
 
     return {"message": "Anomaly model training started in the background."}
@@ -24,16 +27,42 @@ async def train_anomaly_model(background_tasks: BackgroundTasks):
 @router.post("/ml/train-suitability-model", tags=["Machine Learning"])
 async def train_suitability_model(background_tasks: BackgroundTasks):
     """
-    Triggers the LSTM soil-suitability classifier training as a background task.
+    Legacy compatibility endpoint. The suitability classifier is no longer part
+    of Soil Doctor's active reasoning path; temporal forecasting is the active
+    LSTM objective.
 
     Labels (Good/Fair/Poor) are derived by thresholding each node's readings
     against its Target_Crop optimal ranges (see backend/ml/soil_health.py).
     """
     logger.info("Received request to train suitability model. Spawning background task...")
 
+    from backend.ml import lstm_suitability_trainer
+
     background_tasks.add_task(lstm_suitability_trainer.run_training_pipeline)
 
     return {"message": "Suitability model training started in the background."}
+
+
+@router.post("/ml/train-temporal-forecaster", tags=["Machine Learning"])
+async def train_temporal_forecaster(background_tasks: BackgroundTasks):
+    """Train the multivariate forecaster from real telemetry in the background."""
+    logger.info("Received request to train temporal forecaster.")
+    from backend.ml import train_lstm_forecaster
+
+    background_tasks.add_task(train_lstm_forecaster.run_training_pipeline)
+    return {
+        "message": "Temporal forecaster training started in the background.",
+        "warning": (
+            "Artifacts are saved only if chronological train/validation/test windows "
+            "contain enough contiguous real telemetry."
+        ),
+    }
+
+
+@router.get("/ml/temporal/{node_id}", tags=["Machine Learning"])
+async def temporal_intelligence(node_id: str):
+    """Return historical intelligence and an optional deployed forecast for a node."""
+    return temporal_service.get_temporal_farm_intelligence(node_id)
 
 
 class ClassifySuitabilityRequest(BaseModel):
@@ -50,7 +79,7 @@ async def classify_suitability(request: ClassifySuitabilityRequest):
     """
     node_id = request.node_id.strip()
 
-    window = node_data.fetch_node_window(node_id, limit=lstm_suitability_trainer.SEQUENCE_LENGTH)
+    window = node_data.fetch_node_window(node_id, limit=LEGACY_SUITABILITY_SEQUENCE_LENGTH)
 
     if window["status"] == "unavailable":
         raise HTTPException(status_code=503, detail=window.get("reason", "Sensor data unavailable."))
@@ -78,7 +107,7 @@ async def classify_suitability(request: ClassifySuitabilityRequest):
     }
 
     # Add the LSTM verdict when a full window and trained artefacts are present.
-    if window["count"] >= lstm_suitability_trainer.SEQUENCE_LENGTH:
+    if window["count"] >= LEGACY_SUITABILITY_SEQUENCE_LENGTH:
         try:
             from backend.ml import lstm_suitability_inference
 
@@ -97,7 +126,7 @@ async def classify_suitability(request: ClassifySuitabilityRequest):
             "Only %d readings for %s (<%d); returning threshold verdict only.",
             window["count"],
             node_id,
-            lstm_suitability_trainer.SEQUENCE_LENGTH,
+            LEGACY_SUITABILITY_SEQUENCE_LENGTH,
         )
 
     return response

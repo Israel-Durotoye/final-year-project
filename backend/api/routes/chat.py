@@ -229,6 +229,15 @@ class ChatRequest(BaseModel):
         pattern=r"^[A-Za-z0-9_-]+$",
         description="Optional stable identifier for the conversation session.",
     )
+    node_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        description=(
+            "Optional selected sensor node. Existing callers may omit it; the backend "
+            "also recognizes node identifiers in the question and conversation."
+        ),
+    )
     top_k: int = Field(
         default=5,
         ge=1,
@@ -400,16 +409,17 @@ async def post_chat(request: ChatRequest) -> ChatResponse:
             user_query=query,
             retrieved_chunks=chunks,
             conversation_history=conversation_history,
+            node_id=request.node_id.strip() if request.node_id else None,
         )
     except EnvironmentError as exc:
-        # Missing API key — configuration problem, not a client error
-        logger.error("API key error in generate_rag_response: %s", exc)
+        # Missing provider keys — configuration problem, not a client error
+        logger.error("LLM API key error in generate_rag_response: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
-                "Server configuration error: missing or invalid AgentRouter API key. "
-                "Set AGENTROUTER_API_KEY with a valid Agent Router key. "
-                "If you are using a separate AgentRouter auth token, set AGENTROUTER_AUTH_TOKEN as well."
+                "Server configuration error: no LLM provider key is available. "
+                "Set AGENTROUTER_API_KEY for the primary provider and/or "
+                "CONDUIT_API_KEY for the Conduit fallback."
             ),
         ) from exc
     except RuntimeError as exc:

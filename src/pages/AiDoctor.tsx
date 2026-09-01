@@ -61,6 +61,7 @@ const SoilDoctor = () => {
   
   const [loadingResult, setLoadingResult] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const [resultCanContinue, setResultCanContinue] = useState(false);
 
   // Load nodes for selection
   useEffect(() => {
@@ -136,22 +137,28 @@ const SoilDoctor = () => {
     }
   };
 
-  const executeAnalysis = async (query: string) => {
+  const executeAnalysis = async (query: string, nodeId?: string) => {
     setStep("result");
     setLoadingResult(true);
     setResult(null);
+    setResultCanContinue(false);
 
     try {
       const res = await fetch(`${API_BASE}/chat/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({
+          query,
+          node_id: nodeId,
+          conversation_id: conversationId,
+        }),
       });
 
       if (!res.ok) throw new Error("Failed to get analysis");
 
       const data = await res.json();
       setResult(data?.answer ?? "No analysis returned.");
+      setResultCanContinue(Boolean(data?.answer));
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Connection error";
       setResult(`Sorry, we couldn't complete the analysis right now. (${message})`);
@@ -174,7 +181,7 @@ const SoilDoctor = () => {
     } else if (selectedAction === "recommend") {
       query = `Based on the latest data for ${nodeId}, what practical recommendations and steps should be taken to improve conditions?`;
     }
-    executeAnalysis(query);
+    executeAnalysis(query, nodeId);
   };
 
   const handleQuestionSubmit = async (e: React.FormEvent) => {
@@ -193,6 +200,7 @@ const SoilDoctor = () => {
         body: JSON.stringify({
           query,
           conversation_id: conversationId,
+          node_id: selectedNode,
         }),
       });
 
@@ -233,11 +241,22 @@ const SoilDoctor = () => {
     setChatHistoryLoaded(true);
   };
 
+  const continueInChat = () => {
+    // The report request used this conversation_id, so reloading history brings
+    // both the original analysis question and its answer into the chat thread.
+    setChatMessages([CHAT_GREETING]);
+    setCustomQuestion("");
+    setChatHistoryLoaded(false);
+    setSelectedAction("ask");
+    setStep("question");
+  };
+
   const reset = () => {
     setStep("action");
     setSelectedAction(null);
     setSelectedNode(null);
     setResult(null);
+    setResultCanContinue(false);
   };
 
   return (
@@ -494,6 +513,21 @@ const SoilDoctor = () => {
                   />
                 )}
               </div>
+
+              {!loadingResult && resultCanContinue && (
+                <div className="border-t border-border bg-secondary/20 p-4 sm:px-8 sm:py-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                  <div>
+                    <p className="font-medium">Need more clarity?</p>
+                    <p className="text-sm text-muted-foreground">
+                      Continue with this report in a chat and ask as many follow-up questions as you need.
+                    </p>
+                  </div>
+                  <Button type="button" onClick={continueInChat} className="shrink-0">
+                    <MessageCircleQuestion className="h-4 w-4 mr-2" />
+                    Ask a follow-up
+                  </Button>
+                </div>
+              )}
             </div>
           )
         )}

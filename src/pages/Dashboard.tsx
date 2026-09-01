@@ -8,6 +8,11 @@ import {
   Radio, Leaf, FlaskConical, Droplets, CloudRain, Thermometer, Sprout, MapPin, Satellite, Bot
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  ACTIVE_NODE_WINDOW_MINUTES,
+  activityCutoffIso,
+  countActiveNodes,
+} from "@/lib/nodeActivity";
 import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || (process.env.VITE_SUPABASE_URL as string) || "";
@@ -17,6 +22,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const Dashboard = () => {
   const [rows, setRows] = useState<Array<any>>([]);
   const [latestNodes, setLatestNodes] = useState<Array<any>>([]);
+  const [activeNodeCount, setActiveNodeCount] = useState<number | null>(null);
   const [selected, setSelected] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -58,6 +64,36 @@ const Dashboard = () => {
     };
     fetchRecent();
     return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const fetchActiveNodeCount = async () => {
+      const now = new Date();
+      try {
+        const { data, error: sbError } = await supabase
+          .from("capstone_dataset")
+          .select("Node_ID, Timestamp")
+          .gte("Timestamp", activityCutoffIso(now));
+        if (sbError) throw sbError;
+
+        if (mounted) {
+          setActiveNodeCount(countActiveNodes(Array.isArray(data) ? data : [], now));
+        }
+      } catch (err) {
+        console.error("Failed to load active node count", err);
+        if (mounted) setActiveNodeCount(null);
+      }
+    };
+
+    fetchActiveNodeCount();
+    const intervalId = window.setInterval(fetchActiveNodeCount, 60_000);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(intervalId);
+    };
   }, []);
 
   useEffect(() => {
@@ -108,7 +144,13 @@ const Dashboard = () => {
       <div className="p-6 space-y-6">
         {/* Top metrics — computed from Supabase rows */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <MetricCard icon={Radio} label="Total Nodes" value={latestNodes.length} trend="Unique nodes" tone="info" />
+          <MetricCard
+            icon={Radio}
+            label="Active Nodes"
+            value={activeNodeCount ?? "-"}
+            trend={`${latestNodes.length} total · telemetry in last ${ACTIVE_NODE_WINDOW_MINUTES} min`}
+            tone="info"
+          />
           <MetricCard icon={Droplets} label="Avg Soil Moisture" value={rows.length ? `${(rows.reduce((s, r) => s + Number(r["Moisture_%"] || 0), 0) / rows.length).toFixed(1)}%` : "-"} trend="Network average" tone="success" />
           <MetricCard icon={Thermometer} label="Avg Temp" value={rows.length ? `${(rows.reduce((s, r) => s + Number(r.Temperature_C || 0), 0) / rows.length).toFixed(1)}°C` : "-"} trend="Network average" tone="warning" />
         </div>

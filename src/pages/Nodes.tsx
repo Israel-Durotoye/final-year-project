@@ -5,6 +5,12 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import {
+  ACTIVE_NODE_WINDOW_MINUTES,
+  activityCutoffIso,
+  countActiveNodes,
+  isNodeActive,
+} from "@/lib/nodeActivity";
 import { createClient } from "@supabase/supabase-js";
 
 type Tone = "good" | "fair" | "poor";
@@ -92,12 +98,14 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const Nodes = () => {
   const navigate = useNavigate();
   const [latestNodes, setLatestNodes] = useState<Array<any>>([]);
+  const [activeNodeCount, setActiveNodeCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Helper to determine status
   const calculateNodeStatus = (node: any): string => {
-    // OFFLINE if communication_ok is explicitly false
+    // A node is active only when it has sent telemetry within the activity window.
+    if (!isNodeActive(node)) return "OFFLINE";
     if (node.communication_ok === false || node.communication_ok === 0 || node.communication_ok === "false") return "OFFLINE";
     const n = Number(node.Nitrogen_mg_k ?? 0);
     const moisture = Number(node["Moisture_%"] ?? 0);
@@ -138,6 +146,36 @@ const Nodes = () => {
     return () => { mounted = false; };
   }, []);
 
+  useEffect(() => {
+    let mounted = true;
+
+    const fetchActiveNodeCount = async () => {
+      const now = new Date();
+      try {
+        const { data, error: sbError } = await supabase
+          .from("capstone_dataset")
+          .select("Node_ID, Timestamp")
+          .gte("Timestamp", activityCutoffIso(now));
+        if (sbError) throw sbError;
+
+        if (mounted) {
+          setActiveNodeCount(countActiveNodes(Array.isArray(data) ? data : [], now));
+        }
+      } catch (err) {
+        console.error("Failed to load active node count", err);
+        if (mounted) setActiveNodeCount(null);
+      }
+    };
+
+    fetchActiveNodeCount();
+    const intervalId = window.setInterval(fetchActiveNodeCount, 60_000);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
   const totalNodes = latestNodes.length;
   const attention = latestNodes.filter((n) => calculateNodeStatus(n) !== "GOOD").length;
   const yieldForecast = "--"; // placeholder
@@ -149,7 +187,11 @@ const Nodes = () => {
       <div className="p-6 space-y-6">
         {/* Top stats */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <StatCard icon={Server} label="Total Nodes" value={totalNodes} />
+          <StatCard
+            icon={Server}
+            label={`Active Nodes (${ACTIVE_NODE_WINDOW_MINUTES} min)`}
+            value={activeNodeCount ?? "-"}
+          />
           <StatCard icon={AlertTriangle} label="Needs Attention" value={attention} tone="warning" />
           <StatCard icon={TrendingUp} label="Avg Farm Yield Forecast" value={`${yieldForecast}%`} tone="primary" />
         </div>
@@ -160,7 +202,8 @@ const Nodes = () => {
             const status = calculateNodeStatus(n);
             const toneKey: Tone = status === "GOOD" ? "good" : status === "FAIR" ? "fair" : "poor";
             const t = toneClasses[toneKey];
-            const isOnline = !(n.communication_ok === false || n.communication_ok === 0 || n.communication_ok === "false");
+            const isOnline = isNodeActive(n)
+              && !(n.communication_ok === false || n.communication_ok === 0 || n.communication_ok === "false");
             const badgeLabel = status;
 
             return (

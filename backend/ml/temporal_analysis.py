@@ -100,7 +100,9 @@ def _trend(feature: str, values: list[float], times: list[float], slope: float) 
     net = values[-1] - values[0]
     deadband = TREND_DEADBAND_PER_HOUR[feature]
     minimum_net = TREND_MIN_NET_CHANGE[feature]
-    if abs(net) < minimum_net or abs(slope) < deadband:
+    # A regression slope that disagrees with the window's net direction usually
+    # indicates oscillation rather than a defensible directional trend.
+    if abs(net) < minimum_net or abs(slope) < deadband or slope * net <= 0:
         return "stable"
     strength = "strongly_" if abs(slope) >= deadband * 3.0 and abs(net) >= minimum_net * 2 else ""
     return f"{strength}{'rising' if slope > 0 else 'falling'}"
@@ -201,7 +203,7 @@ def _moisture_events(prepared: PreparedTemporalData, metrics: dict[str, Any]) ->
     )
 
     if wet_count >= 3 and (sharp_indices or metrics.get("trend") in {"rising", "strongly_rising"}):
-        supporting = min(1.0, 0.45 + min(wet_count, 8) * 0.05 + (0.15 if sharp_indices else 0.0))
+        supporting = min(0.85, 0.45 + min(wet_count, 8) * 0.05 + (0.10 if sharp_indices else 0.0))
         events.append(
             {
                 "type": "sustained_wetting",
@@ -290,12 +292,13 @@ def _nutrient_step_events(prepared: PreparedTemporalData) -> list[dict[str, Any]
         if len(values) < 2:
             continue
         threshold = ABRUPT_CHANGE[feature]
+        sensor_events: list[dict[str, Any]] = []
         for index, (before, after) in enumerate(zip(values, values[1:])):
             delta = after - before
             if abs(delta) < threshold:
                 continue
             direction = "increase" if delta > 0 else "drop"
-            events.append(
+            sensor_events.append(
                 {
                     "type": f"abrupt_nutrient_{direction}",
                     "sensor": FEATURE_SHORT_NAMES[feature],
@@ -308,6 +311,22 @@ def _nutrient_step_events(prepared: PreparedTemporalData) -> list[dict[str, Any]
                     ),
                 }
             )
+        if len(sensor_events) >= 3:
+            events.append(
+                {
+                    "type": "unusual_nutrient_volatility",
+                    "sensor": FEATURE_SHORT_NAMES[feature],
+                    "occurrences": len(sensor_events),
+                    "start": sensor_events[0]["observed_at"],
+                    "end": sensor_events[-1]["observed_at"],
+                    "largest_absolute_change": max(
+                        abs(float(event["change"])) for event in sensor_events
+                    ),
+                    "interpretation": "repeated abrupt changes; input events, sensor instability, or another cause remain unconfirmed",
+                }
+            )
+        else:
+            events.extend(sensor_events)
     return events
 
 

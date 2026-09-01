@@ -58,17 +58,25 @@ def get_temporal_farm_intelligence(
     }
 
     tail_matrix = complete_feature_matrix(prepared.contiguous_tail)
-    required = int(
-        lstm_forecaster.artifact_status().get("sequence_length")
-        or DEFAULT_SEQUENCE_LENGTH
-    )
+    model_status = lstm_forecaster.artifact_status()
+    required = int(model_status.get("sequence_length") or DEFAULT_SEQUENCE_LENGTH)
     if len(prepared.contiguous_tail) < required:
         forecast_result = {
             "status": "insufficient_history",
             "forecast": None,
             "samples_available": len(prepared.contiguous_tail),
             "samples_required": required,
-            "model": lstm_forecaster.artifact_status(),
+            "model": model_status,
+        }
+    elif model_status.get("status") != "available":
+        forecast_result = {
+            "status": model_status.get("status", "not_trained"),
+            "forecast": None,
+            "reason": (
+                "No validated multivariate forecast artifact is deployed. "
+                "Historical analysis remains available."
+            ),
+            "model": model_status,
         }
     elif tail_matrix is None:
         forecast_result = {
