@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover - optional dependency
     Client = None
     create_client = None
 
-from backend.ml import soil_health
+from backend.ml import firebase_hardware, soil_health
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,28 @@ def fetch_node_window(node_id: str, limit: int = DEFAULT_WINDOW) -> dict[str, An
         {"unavailable", "insufficient_data"} and a "reason"/"message".
     """
 
+    cleaned_node = str(node_id).strip().upper()
+    if firebase_hardware.is_physical_node(cleaned_node):
+        try:
+            rows = firebase_hardware.fetch_hardware_rows(cleaned_node, limit=limit)
+        except Exception as exc:  # pragma: no cover - network path
+            logger.warning("Hardware node window query failed for %s: %s", cleaned_node, exc)
+            return {"status": "unavailable", "reason": "Unable to retrieve sensor data."}
+
+        if not rows:
+            return {
+                "status": "insufficient_data",
+                "message": f"No sensor data found for {cleaned_node}.",
+                "count": 0,
+            }
+        return {
+            "status": "ok",
+            "rows": rows,
+            "latest": rows[-1],
+            "crop": None,
+            "count": len(rows),
+        }
+
     if create_client is None:
         return {"status": "unavailable", "reason": "Supabase package is not installed."}
 
@@ -58,20 +80,20 @@ def fetch_node_window(node_id: str, limit: int = DEFAULT_WINDOW) -> dict[str, An
         result = (
             client.table(FARM_DATA_TABLE)
             .select("*")
-            .eq("Node_ID", node_id)
+            .eq("Node_ID", cleaned_node)
             .order("Timestamp", desc=True)
             .limit(limit)
             .execute()
         )
         rows = getattr(result, "data", None) or []
     except Exception as exc:  # pragma: no cover - network path
-        logger.warning("Node window query failed for %s: %s", node_id, exc)
+        logger.warning("Node window query failed for %s: %s", cleaned_node, exc)
         return {"status": "unavailable", "reason": "Unable to retrieve sensor data."}
 
     if not rows:
         return {
             "status": "insufficient_data",
-            "message": f"No sensor data found for {node_id}.",
+            "message": f"No sensor data found for {cleaned_node}.",
             "count": 0,
         }
 

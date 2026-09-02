@@ -5,8 +5,8 @@ import { AlertTriangle, AlertCircle, CheckCircle2, Clock, RefreshCw, Settings2 }
 import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { supabase } from "@/lib/supabase";
 import { ThresholdAlert, evaluateNodeThresholds, latestReadingsByNode, loadAlertThresholds } from "@/lib/alerting";
+import { fetchTelemetry } from "@/lib/telemetry";
 
 const severityMap = {
   critical: { icon: AlertCircle, cls: "bg-destructive/10 text-destructive border-destructive/20", label: "Critical" },
@@ -29,14 +29,8 @@ const Alerts = () => {
     setLoading(true);
     setError(null);
     try {
-      const { data, error: supabaseError } = await supabase
-        .from("capstone_dataset")
-        .select("*")
-        .order("Timestamp", { ascending: false })
-        .limit(500);
-      if (supabaseError) throw supabaseError;
-
-      const latestReadings = latestReadingsByNode(Array.isArray(data) ? data : []);
+      const data = await fetchTelemetry({ limit: 500 });
+      const latestReadings = latestReadingsByNode(data);
       const thresholds = loadAlertThresholds();
       const generatedAlerts = latestReadings
         .flatMap((row) => evaluateNodeThresholds(row, thresholds))

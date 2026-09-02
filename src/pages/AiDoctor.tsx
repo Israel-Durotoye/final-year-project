@@ -2,15 +2,12 @@ import { useState, useEffect, useRef } from "react";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Leaf, Droplets, Sparkles, MessageCircleQuestion, ChevronRight, Activity, RotateCcw, Bot, Send, UserRound, Plus } from "lucide-react";
-import { createClient } from "@supabase/supabase-js";
 import { cn } from "@/lib/utils";
 import { SoilDoctorCharts } from "@/components/SoilDoctorCharts";
 import { AssistantMarkdown } from "@/components/chat/AssistantMarkdown";
+import { fetchTelemetry } from "@/lib/telemetry";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || (process.env.VITE_SUPABASE_URL as string) || "";
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || (process.env.VITE_SUPABASE_ANON_KEY as string) || "";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 type ActionType = "view" | "analyse" | "recommend" | "ask" | null;
 type ChatRole = "user" | "assistant";
@@ -67,15 +64,8 @@ const SoilDoctor = () => {
   useEffect(() => {
     const fetchNodes = async () => {
       try {
-        const { data, error } = await supabase
-          .from("capstone_dataset")
-          .select("Node_ID")
-          .order("Timestamp", { ascending: false })
-          .limit(200);
-        
-        if (error) throw error;
-        
-        const uniqueNodes = Array.from(new Set((data || []).map(r => r.Node_ID))).sort();
+        const data = await fetchTelemetry({ limit: 200 });
+        const uniqueNodes = Array.from(new Set(data.map((row) => row.Node_ID))).sort();
         setNodes(uniqueNodes);
       } catch (err) {
         console.error("Failed to load nodes", err);

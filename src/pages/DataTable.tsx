@@ -1,17 +1,13 @@
 import { useEffect, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Download, Calendar, ChevronLeft, ChevronRight } from "lucide-react";
+import { Calendar } from "lucide-react";
 import { toast } from "sonner";
-// Initialize Supabase client using Vite env vars (or fall back to process.env)
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || (process.env.VITE_SUPABASE_URL as string) || "";
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || (process.env.VITE_SUPABASE_ANON_KEY as string) || "";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+import { fetchTelemetry as loadTelemetry, TelemetryRow } from "@/lib/telemetry";
 
 const DataTable = () => {
-  const [telemetry, setTelemetry] = useState<Array<any>>([]);
+  const [telemetry, setTelemetry] = useState<TelemetryRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [startDate, setStartDate] = useState<string | null>(null);
@@ -21,27 +17,13 @@ const DataTable = () => {
     setLoading(true);
     setError(null);
     try {
-      let query: any = supabase
-        .from("capstone_dataset")
-        .select("*")
-        .order("Timestamp", { ascending: false });
-
-      if (opts?.start) {
-        const startISO = new Date(opts.start).toISOString();
-        query = query.gte("Timestamp", startISO);
-      }
-      if (opts?.end) {
-        // include end of day by default if only date provided
-        const endISO = new Date(opts.end).toISOString();
-        query = query.lte("Timestamp", endISO);
-      }
-
-      const { data, error: sbError } = await query;
-      if (sbError) throw sbError;
-
-      setTelemetry(Array.isArray(data) ? data : []);
-    } catch (err: any) {
-      setError(err.message || String(err));
+      const data = await loadTelemetry({
+        start: opts?.start ? new Date(opts.start).toISOString() : null,
+        end: opts?.end ? new Date(opts.end).toISOString() : null,
+      });
+      setTelemetry(data);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
       setTelemetry([]);
     } finally {
       setLoading(false);
@@ -76,8 +58,9 @@ const DataTable = () => {
         throw new Error(`Server error: ${response.status}`);
       }
       toast.success("Training job submitted successfully.");
-    } catch (err: any) {
-      toast.error(`Training failed to start: ${err.message}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      toast.error(`Training failed to start: ${message}`);
     } finally {
       // We set training to false even if it runs in background just to unlock the button,
       // or we can keep it true for a few seconds.
@@ -119,7 +102,7 @@ const DataTable = () => {
                 <thead className="bg-secondary/60">
                   <tr className="text-left text-xs uppercase tracking-wider text-muted-foreground">
                     {[
-                      "SENSOR","N","P","K","MOISTURE","TEMP","HUMIDITY","LAT","LNG","ALTITUDE","SATS","TIMESTAMP"
+                      "SENSOR","SOURCE","N","P","K","MOISTURE","TEMP","HUMIDITY","LAT","LNG","ALTITUDE","SATS","TIMESTAMP"
                     ].map(h => (
                       <th key={h} className="px-4 py-3 font-semibold">{h}</th>
                     ))}
@@ -129,6 +112,7 @@ const DataTable = () => {
                   {telemetry.map((r, i) => (
                     <tr key={i} className="border-t border-border hover:bg-secondary/40 transition-colors">
                       <td className="px-4 py-3 font-semibold text-primary">{r.Node_ID}</td>
+                      <td className="px-4 py-3 text-xs font-semibold uppercase text-muted-foreground">{r.Data_Source}</td>
                       <td className="px-4 py-3">{r.Nitrogen_mg_k ?? "-"}</td>
                       <td className="px-4 py-3">{r.Phosphorus_m ?? "-"}</td>
                       <td className="px-4 py-3">{r.Potassium_mg_ ?? "-"}</td>

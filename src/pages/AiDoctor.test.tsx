@@ -15,16 +15,12 @@ vi.mock("@/components/chat/AssistantMarkdown", () => ({
   AssistantMarkdown: ({ content }: { content: string }) => <div>{content}</div>,
 }));
 
-vi.mock("@supabase/supabase-js", () => ({
-  createClient: () => ({
-    from: () => ({
-      select: () => ({
-        order: () => ({
-          limit: async () => ({ data: [{ Node_ID: "NODE_01" }], error: null }),
-        }),
-      }),
-    }),
-  }),
+vi.mock("@/lib/telemetry", () => ({
+  fetchTelemetry: async () => ([{
+    Node_ID: "NODE_01",
+    Timestamp: "2026-09-02T08:00:00Z",
+    Data_Source: "hardware",
+  }]),
 }));
 
 describe("AiDoctor report follow-up", () => {

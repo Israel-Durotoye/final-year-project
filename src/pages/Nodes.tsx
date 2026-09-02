@@ -11,7 +11,7 @@ import {
   countActiveNodes,
   isNodeActive,
 } from "@/lib/nodeActivity";
-import { createClient } from "@supabase/supabase-js";
+import { fetchTelemetry, latestTelemetryByNode } from "@/lib/telemetry";
 
 type Tone = "good" | "fair" | "poor";
 
@@ -91,9 +91,7 @@ const MetricCell = ({ icon: Icon, label, value, mKey, val }: { icon: LucideIcon;
   );
 };
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || (process.env.VITE_SUPABASE_URL as string) || "";
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || (process.env.VITE_SUPABASE_ANON_KEY as string) || "";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const TELEMETRY_REFRESH_INTERVAL_MS = 30_000;
 
 const Nodes = () => {
   const navigate = useNavigate();
@@ -120,20 +118,8 @@ const Nodes = () => {
       setLoading(true);
       setError(null);
       try {
-        const { data, error: sbError } = await supabase
-          .from("capstone_dataset")
-          .select("*")
-          .order("Timestamp", { ascending: false })
-          .limit(100);
-        if (sbError) throw sbError;
-        const rows = Array.isArray(data) ? data : [];
-        // Reduce to latest row per node_id
-        const reduced = rows.reduce((acc: Map<string, any>, row: any) => {
-          const id = row.Node_ID;
-          if (!acc.has(id)) acc.set(id, row);
-          return acc;
-        }, new Map<string, any>());
-        const latest = Array.from(reduced.values());
+        const rows = await fetchTelemetry({ limit: 200 });
+        const latest = latestTelemetryByNode(rows);
         if (mounted) setLatestNodes(latest);
       } catch (err: any) {
         setError(err.message || String(err));
@@ -143,7 +129,11 @@ const Nodes = () => {
       }
     };
     fetchLatest();
-    return () => { mounted = false; };
+    const intervalId = window.setInterval(fetchLatest, TELEMETRY_REFRESH_INTERVAL_MS);
+    return () => {
+      mounted = false;
+      window.clearInterval(intervalId);
+    };
   }, []);
 
   useEffect(() => {
@@ -152,14 +142,10 @@ const Nodes = () => {
     const fetchActiveNodeCount = async () => {
       const now = new Date();
       try {
-        const { data, error: sbError } = await supabase
-          .from("capstone_dataset")
-          .select("Node_ID, Timestamp")
-          .gte("Timestamp", activityCutoffIso(now));
-        if (sbError) throw sbError;
+        const data = await fetchTelemetry({ start: activityCutoffIso(now) });
 
         if (mounted) {
-          setActiveNodeCount(countActiveNodes(Array.isArray(data) ? data : [], now));
+          setActiveNodeCount(countActiveNodes(data, now));
         }
       } catch (err) {
         console.error("Failed to load active node count", err);
@@ -216,7 +202,9 @@ const Nodes = () => {
                     </div>
                     <div>
                       <h3 className="font-bold tracking-tight text-base">{n.Node_ID}</h3>
-                      <p className="text-xs text-muted-foreground">{n.Target_Crop ?? "-"} · {getNigerianSeason(n.Timestamp)}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {n.Target_Crop ?? "-"} · {getNigerianSeason(n.Timestamp)} · {n.Data_Source === "hardware" ? "Hardware" : "Simulator"}
+                      </p>
                     </div>
                   </div>
                   <span className={cn("inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold tracking-wider", status === "OFFLINE" ? "bg-muted text-muted-foreground" : t.badgeBg, status === "OFFLINE" ? "text-muted-foreground" : t.badgeText)}>

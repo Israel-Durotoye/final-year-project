@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from statistics import median
 from typing import Any, Callable, Iterable
 
+from backend.ml import firebase_hardware
+
 try:
     from supabase import Client, create_client
 except ImportError:  # pragma: no cover - optional in unit-test environments
@@ -141,6 +143,22 @@ def fetch_node_history(
     cleaned_node = str(node_id).strip()
     if not cleaned_node:
         return {"status": "unavailable", "reason": "node_id is required.", "rows": []}
+
+    if firebase_hardware.is_physical_node(cleaned_node):
+        try:
+            rows = firebase_hardware.fetch_hardware_rows(cleaned_node, limit=limit)
+        except Exception as exc:  # pragma: no cover - network-specific
+            return {
+                "status": "unavailable",
+                "reason": f"Unable to retrieve sensor history: {str(exc)[:160]}",
+                "rows": [],
+            }
+        return {
+            "status": "ok" if rows else "insufficient_history",
+            "node_id": cleaned_node,
+            "rows": rows,
+            "count": len(rows),
+        }
 
     if client is None:
         if create_client is None:

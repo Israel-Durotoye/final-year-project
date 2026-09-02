@@ -32,17 +32,43 @@ class SensorSimulatorTests(unittest.TestCase):
         for distance in distances:
             self.assertAlmostEqual(distance, 140, delta=0.03)
 
-    def test_batch_uses_one_timestamp_and_hexagon_coordinates(self) -> None:
+    def test_batch_only_uses_simulator_owned_nodes(self) -> None:
         timestamp = datetime(2026, 8, 31, 12, 30, 15)
         batch = sensor_simulator.build_telemetry_batch(timestamp)
 
-        self.assertEqual(len(batch), 6)
+        self.assertEqual(len(batch), 4)
         self.assertEqual({row["Timestamp"] for row in batch}, {"2026-08-31 12:30:15"})
-        self.assertEqual({row["Node_ID"] for row in batch}, set(sensor_simulator.NODES))
+        self.assertEqual(
+            {row["Node_ID"] for row in batch},
+            set(sensor_simulator.SIMULATED_NODE_IDS),
+        )
+        self.assertTrue(
+            {"NODE_01", "NODE_02"}.isdisjoint(row["Node_ID"] for row in batch)
+        )
         for row in batch:
             node = sensor_simulator.NODES[row["Node_ID"]]
             self.assertEqual(row["Latitude"], node["lat"])
             self.assertEqual(row["Longitude"], node["lng"])
+
+    def test_nodes_four_to_six_are_inside_fut_minna(self) -> None:
+        coordinates = sensor_simulator.build_fut_minna_node_coordinates()
+
+        self.assertEqual(set(coordinates), {"NODE_04", "NODE_05", "NODE_06"})
+        for node_id, coordinate in coordinates.items():
+            self.assertGreaterEqual(
+                coordinate["lat"], sensor_simulator.FUT_MINNA_LATITUDE_BOUNDS[0]
+            )
+            self.assertLessEqual(
+                coordinate["lat"], sensor_simulator.FUT_MINNA_LATITUDE_BOUNDS[1]
+            )
+            self.assertGreaterEqual(
+                coordinate["lng"], sensor_simulator.FUT_MINNA_LONGITUDE_BOUNDS[0]
+            )
+            self.assertLessEqual(
+                coordinate["lng"], sensor_simulator.FUT_MINNA_LONGITUDE_BOUNDS[1]
+            )
+            self.assertEqual(sensor_simulator.NODES[node_id]["lat"], coordinate["lat"])
+            self.assertEqual(sensor_simulator.NODES[node_id]["lng"], coordinate["lng"])
 
     @patch("sensor_simulator.telemetry_batch_exists", return_value=False)
     def test_transport_error_is_retried_with_backoff(self, _exists: MagicMock) -> None:

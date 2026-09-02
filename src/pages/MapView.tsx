@@ -1,7 +1,6 @@
 import { PageHeader } from "@/components/layout/PageHeader";
 import { getNigerianSeason } from "@/lib/season";
 import { useEffect, useState } from "react";
-import { createClient } from "@supabase/supabase-js";
 import { MapPreview } from "@/components/MapPreview";
 import { Circle } from "react-leaflet";
 import { Droplets, Leaf, Wifi, Activity } from "lucide-react";
@@ -12,11 +11,8 @@ import {
   getSpatialLayerRadiusMeters,
   SpatialLayerType,
 } from "@/lib/mapSpatial";
+import { fetchTelemetry, latestTelemetryByNode } from "@/lib/telemetry";
 
-// Initialize Supabase client using Vite env vars (or fall back to process.env)
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || (process.env.VITE_SUPABASE_URL as string) || "";
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || (process.env.VITE_SUPABASE_ANON_KEY as string) || "";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const MAP_REFRESH_INTERVAL_MS = 60_000;
 
 const MapView = () => {
@@ -34,27 +30,9 @@ const MapView = () => {
       if (initialLoad) setLoading(true);
       setError(null);
       try {
-        const { data, error: sbError } = await supabase
-          .from("capstone_dataset")
-          .select("*")
-          .order("Timestamp", { ascending: false })
-          .limit(1000);
-
-        if (sbError) throw sbError;
+        const arr = await fetchTelemetry({ limit: 1000 });
         if (cancelled) return;
-
-        const arr = Array.isArray(data) ? data : [];
-
-        // Reduce to one latest row per distinct node_id
-        const seen = new Map<string, any>();
-        for (const row of arr) {
-          const id = String(row.Node_ID);
-          if (!seen.has(id)) seen.set(id, row);
-        }
-
-        const latest = Array.from(seen.values()).sort((a, b) => (
-          String(a.Node_ID).localeCompare(String(b.Node_ID))
-        ));
+        const latest = latestTelemetryByNode(arr);
         setNodesLatest(latest);
         setSelected((current) => (
           current && latest.some((item) => String(item.Node_ID) === current)

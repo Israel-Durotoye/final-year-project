@@ -21,6 +21,21 @@ HEXAGON_CENTER_LATITUDE = float(os.environ.get("SIMULATOR_CENTER_LATITUDE", "8.4
 HEXAGON_CENTER_LONGITUDE = float(os.environ.get("SIMULATOR_CENTER_LONGITUDE", "4.54225"))
 HEXAGON_RADIUS_METERS = float(os.environ.get("SIMULATOR_HEX_RADIUS_METERS", "140"))
 
+# FUT Minna's Gidan Kwano main campus lies within approximately
+# 9.5281-9.5369 N and 6.4386-6.4664 E. NODE_04-NODE_06 are placed in a
+# compact triangle near the centre of those published campus bounds.
+FUT_MINNA_CENTER_LATITUDE = float(
+    os.environ.get("FUT_MINNA_CENTER_LATITUDE", "9.53250")
+)
+FUT_MINNA_CENTER_LONGITUDE = float(
+    os.environ.get("FUT_MINNA_CENTER_LONGITUDE", "6.45250")
+)
+FUT_MINNA_NODE_RADIUS_METERS = float(
+    os.environ.get("FUT_MINNA_NODE_RADIUS_METERS", "140")
+)
+FUT_MINNA_LATITUDE_BOUNDS = (9.5280556, 9.5369444)
+FUT_MINNA_LONGITUDE_BOUNDS = (6.4386111, 6.4663889)
+
 # --- Crop Profiles for Realistic Simulated Telemetry ---
 CROP_PROFILES = {
     "Maize": {
@@ -38,6 +53,7 @@ CROP_PROFILES = {
 }
 
 NODE_CROPS = ("Maize", "Maize", "Cassava", "Cassava", "Rice", "Rice")
+SIMULATED_NODE_IDS = ("NODE_03", "NODE_04", "NODE_05", "NODE_06")
 
 
 def build_hexagon_nodes(
@@ -69,7 +85,42 @@ def build_hexagon_nodes(
     return nodes
 
 
+def build_fut_minna_node_coordinates(
+    center_latitude: float = FUT_MINNA_CENTER_LATITUDE,
+    center_longitude: float = FUT_MINNA_CENTER_LONGITUDE,
+    radius_meters: float = FUT_MINNA_NODE_RADIUS_METERS,
+) -> Dict[str, Dict[str, float]]:
+    """Place NODE_04-NODE_06 inside FUT Minna's Gidan Kwano campus."""
+    latitude_degrees_per_meter = 1.0 / 111_320.0
+    longitude_degrees_per_meter = 1.0 / (
+        111_320.0 * cos(radians(center_latitude))
+    )
+    coordinates: Dict[str, Dict[str, float]] = {}
+
+    for node_id, angle_degrees in zip(
+        ("NODE_04", "NODE_05", "NODE_06"),
+        (30, 150, 270),
+    ):
+        angle = radians(angle_degrees)
+        coordinates[node_id] = {
+            "lat": round(
+                center_latitude
+                + radius_meters * sin(angle) * latitude_degrees_per_meter,
+                7,
+            ),
+            "lng": round(
+                center_longitude
+                + radius_meters * cos(angle) * longitude_degrees_per_meter,
+                7,
+            ),
+        }
+
+    return coordinates
+
+
 NODES = build_hexagon_nodes()
+for fut_node_id, fut_coordinates in build_fut_minna_node_coordinates().items():
+    NODES[fut_node_id].update(fut_coordinates)
 
 
 def create_simulator_client() -> tuple[Client, httpx.Client]:
@@ -106,7 +157,8 @@ def build_telemetry_batch(timestamp: datetime | None = None) -> List[Dict[str, A
     reading_time = reading_timestamp.strftime("%Y-%m-%d %H:%M:%S")
     batch: List[Dict[str, Any]] = []
 
-    for node_id, config in NODES.items():
+    for node_id in SIMULATED_NODE_IDS:
+        config = NODES[node_id]
         profile = CROP_PROFILES[config["crop"]]
         batch.append({
             "Timestamp": reading_time,
@@ -187,8 +239,9 @@ def run_simulator() -> None:
     client, http_client = create_simulator_client()
     print("🌱 Starting capstone hardware simulation... Press Ctrl+C to stop.")
     print(
-        f"⬡ Six nodes arranged in a {HEXAGON_RADIUS_METERS:.0f}m-radius hexagon "
-        f"around ({HEXAGON_CENTER_LATITUDE:.5f}, {HEXAGON_CENTER_LONGITUDE:.5f})."
+        f"⬡ Simulating {', '.join(SIMULATED_NODE_IDS)}. "
+        f"NODE_04-NODE_06 use FUT Minna Gidan Kwano GPS positions around "
+        f"({FUT_MINNA_CENTER_LATITUDE:.5f}, {FUT_MINNA_CENTER_LONGITUDE:.5f})."
     )
 
     try:

@@ -13,11 +13,9 @@ import {
   activityCutoffIso,
   countActiveNodes,
 } from "@/lib/nodeActivity";
-import { createClient } from "@supabase/supabase-js";
+import { fetchTelemetry, latestTelemetryByNode } from "@/lib/telemetry";
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || (process.env.VITE_SUPABASE_URL as string) || "";
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || (process.env.VITE_SUPABASE_ANON_KEY as string) || "";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const TELEMETRY_REFRESH_INTERVAL_MS = 30_000;
 
 const Dashboard = () => {
   const [rows, setRows] = useState<Array<any>>([]);
@@ -35,25 +33,17 @@ const Dashboard = () => {
       setLoading(true);
       setError(null);
       try {
-        const { data, error: sbError } = await supabase
-          .from("capstone_dataset")
-          .select("*")
-          .order("Timestamp", { ascending: false })
-          .limit(300);
-        if (sbError) throw sbError;
-        const arr = Array.isArray(data) ? data : [];
+        const arr = await fetchTelemetry({ limit: 300 });
         if (!mounted) return;
         setRows(arr);
 
-        // Reduce to latest per node_id
-        const seen = new Map<string, any>();
-        for (const r of arr) {
-          const id = r.Node_ID;
-          if (!seen.has(id)) seen.set(id, r);
-        }
-        const latest = Array.from(seen.values());
+        const latest = latestTelemetryByNode(arr);
         setLatestNodes(latest);
-        if (!selected && latest.length) setSelected(latest[0].Node_ID);
+        setSelected((current) => (
+          current && latest.some((item) => item.Node_ID === current)
+            ? current
+            : latest[0]?.Node_ID
+        ));
       } catch (err: any) {
         setError(err.message || String(err));
         setRows([]);
@@ -63,7 +53,11 @@ const Dashboard = () => {
       }
     };
     fetchRecent();
-    return () => { mounted = false; };
+    const intervalId = window.setInterval(fetchRecent, TELEMETRY_REFRESH_INTERVAL_MS);
+    return () => {
+      mounted = false;
+      window.clearInterval(intervalId);
+    };
   }, []);
 
   useEffect(() => {
@@ -72,14 +66,10 @@ const Dashboard = () => {
     const fetchActiveNodeCount = async () => {
       const now = new Date();
       try {
-        const { data, error: sbError } = await supabase
-          .from("capstone_dataset")
-          .select("Node_ID, Timestamp")
-          .gte("Timestamp", activityCutoffIso(now));
-        if (sbError) throw sbError;
+        const data = await fetchTelemetry({ start: activityCutoffIso(now) });
 
         if (mounted) {
-          setActiveNodeCount(countActiveNodes(Array.isArray(data) ? data : [], now));
+          setActiveNodeCount(countActiveNodes(data, now));
         }
       } catch (err) {
         console.error("Failed to load active node count", err);
@@ -184,7 +174,9 @@ const Dashboard = () => {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-5 border-b border-border">
             <div>
               <h2 className="text-lg font-semibold">Sensor Readings</h2>
-              <p className="text-sm text-muted-foreground">Live readings · {node?.Target_Crop ?? "-"} — {getNigerianSeason(node?.Timestamp)}</p>
+              <p className="text-sm text-muted-foreground">
+                Live {node?.Data_Source === "hardware" ? "hardware" : "simulator"} readings · {node?.Target_Crop ?? "-"} — {getNigerianSeason(node?.Timestamp)}
+              </p>
             </div>
             <div className="flex flex-wrap gap-2">
               {latestNodes.map((n) => (

@@ -52,6 +52,7 @@ except ImportError:
     Client = None
     create_client = None
 
+from backend.ml import firebase_hardware
 from backend.rag import diagnostics, prescriptions
 from backend.utils.season import get_nigerian_season
 
@@ -1340,6 +1341,36 @@ def _get_farm_snapshot() -> dict[str, Any]:
                     "communication_ok": row.get("communication_ok"),
                 }
 
+        for hardware_node_id in sorted(firebase_hardware.PHYSICAL_NODE_IDS):
+            try:
+                hardware_rows = firebase_hardware.fetch_hardware_rows(
+                    hardware_node_id,
+                    limit=1,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Hardware farm snapshot query failed for %s: %s",
+                    hardware_node_id,
+                    exc,
+                )
+                continue
+            if not hardware_rows:
+                continue
+            row = hardware_rows[-1]
+            latest_by_node[hardware_node_id] = {
+                "node_id": hardware_node_id,
+                "timestamp_utc": row.get("Timestamp"),
+                "currently_planted_crop": None,
+                "season": row.get("Season") or get_nigerian_season(row.get("Timestamp")),
+                "nitrogen_mg_kg": row.get("Nitrogen_mg_k"),
+                "phosphorus_mg_kg": row.get("Phosphorus_m"),
+                "potassium_mg_kg": row.get("Potassium_mg_"),
+                "moisture_pct": row.get("Moisture_%"),
+                "temperature_c": row.get("Temperature_C"),
+                "humidity_pct": row.get("Humidity_%"),
+                "communication_ok": True,
+            }
+
         return {
             "status": "online",
             "source_table": FARM_DATA_TABLE,
@@ -1356,6 +1387,38 @@ def _get_farm_snapshot() -> dict[str, Any]:
 
 def _get_live_sensor_data(node_id: str) -> dict[str, Any]:
     """Fetch the latest sensor reading for a node."""
+
+    cleaned_node = str(node_id).strip().upper()
+    if firebase_hardware.is_physical_node(cleaned_node):
+        try:
+            rows = firebase_hardware.fetch_hardware_rows(cleaned_node, limit=1)
+        except Exception as exc:
+            logger.warning("Live hardware query failed for %s: %s", cleaned_node, exc)
+            return {
+                "status": "offline",
+                "reason": "Unable to retrieve physical sensor data.",
+            }
+        if not rows:
+            return {
+                "status": "offline",
+                "reason": f"No sensor data found for {cleaned_node}.",
+            }
+        row = rows[-1]
+        return {
+            "status": "online",
+            "node_id": row.get("Node_ID"),
+            "timestamp_utc": row.get("Timestamp"),
+            "nitrogen": row.get("Nitrogen_mg_k"),
+            "phosphorus": row.get("Phosphorus_m"),
+            "potassium": row.get("Potassium_mg_"),
+            "moisture": row.get("Moisture_%"),
+            "temperature": row.get("Temperature_C"),
+            "humidity": row.get("Humidity_%"),
+            "ph": row.get("Soil_pH"),
+            "latitude": row.get("Latitude"),
+            "longitude": row.get("Longitude"),
+            "gps_source": row.get("GPS_Source"),
+        }
 
     if create_client is None:
         return {

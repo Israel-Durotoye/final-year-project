@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { createClient } from "@supabase/supabase-js";
-import { format, subHours, subDays } from "date-fns";
+import { format, subDays } from "date-fns";
 import {
   AreaChart,
   Area,
@@ -14,10 +13,7 @@ import {
   Legend
 } from "recharts";
 import { Activity, Droplets, Thermometer, Leaf, RefreshCw } from "lucide-react";
-
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || (process.env.VITE_SUPABASE_URL as string) || "";
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || (process.env.VITE_SUPABASE_ANON_KEY as string) || "";
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+import { fetchTelemetry } from "@/lib/telemetry";
 
 type TimeFilter = "7d" | "30d" | "3m";
 
@@ -43,16 +39,13 @@ export const SoilDoctorCharts = ({ nodeId }: Props) => {
         else if (filter === "30d") startTime = subDays(now, 30);
         else if (filter === "3m") startTime = subDays(now, 90);
 
-        const { data: rows, error: sbError } = await supabase
-          .from("capstone_dataset")
-          .select("*")
-          .eq("Node_ID", nodeId)
-          .gte("Timestamp", startTime.toISOString())
-          .order("Timestamp", { ascending: true })
-          .limit(1000);
-
-        if (sbError) throw sbError;
-        setData(rows || []);
+        const rows = await fetchTelemetry({
+          nodeId,
+          start: startTime.toISOString(),
+          ascending: true,
+          limit: 1000,
+        });
+        setData(rows);
       } catch (err: any) {
         setError(err.message || "Failed to load sensor data.");
       } finally {
