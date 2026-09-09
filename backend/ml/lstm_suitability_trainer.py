@@ -5,7 +5,7 @@ Good / Fair / Poor for the crop that node is dedicated to.
 
 Pipeline
 --------
-    fetch  -> rows from capstone_dataset, grouped by node (keeps Target_Crop)
+    fetch  -> all Firebase hardware + Supabase simulator rows, grouped by node
     label  -> soil_health.score_reading() labels each window's latest reading
     train  -> LSTM over 24-step windows of the 6 measured sensors -> softmax(3)
     save   -> lstm_suitability_model.keras + scaler_suitability.pkl
@@ -27,12 +27,11 @@ from typing import Dict, List
 
 import joblib
 import numpy as np
-from supabase import create_client, Client
 from sklearn.preprocessing import MinMaxScaler
 import keras
 from keras import layers, callbacks
 
-from backend.ml import soil_health
+from backend.ml import crop_training_data, soil_health
 
 logger = logging.getLogger(__name__)
 
@@ -50,35 +49,18 @@ EPOCHS = 100
 BATCH_SIZE = 32
 VALIDATION_SPLIT = 0.1
 
-FARM_DATA_TABLE = os.environ.get("FARM_DATA_TABLE", "capstone_dataset")
-
-
 def fetch_data() -> Dict[str, List[Dict]]:
-    """Fetch all rows and group them by node, preserving chronological order."""
+    """Fetch both databases and group all rows chronologically by node."""
 
-    url = os.environ.get("SUPABASE_URL") or os.environ.get("VITE_SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY") or os.environ.get("VITE_SUPABASE_ANON_KEY")
-    if not url or not key:
-        raise ValueError("Supabase credentials missing.")
-
-    client: Client = create_client(url, key)
-    logger.info("Fetching data from Supabase for suitability training...")
+    logger.info("Fetching hardware and simulator data for suitability training...")
     try:
-        response = (
-            client.table(FARM_DATA_TABLE)
-            .select("*")
-            .order("Timestamp")
-            .limit(10000)
-            .execute()
-        )
-        data = getattr(response, "data", None) or (
-            response.get("data") if isinstance(response, dict) else []
-        )
+        data = crop_training_data.fetch_all_crop_training_rows()
     except Exception as e:
         logger.error(f"Failed to fetch data: {e}")
         raise
 
-    logger.info(f"Fetched {len(data)} rows.")
+    source_counts = Counter(str(row.get("Data_Source") or "unknown") for row in data)
+    logger.info("Fetched %d rows from both databases: %s", len(data), dict(source_counts))
 
     nodes_data: Dict[str, List[Dict]] = {}
     for row in data:

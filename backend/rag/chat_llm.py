@@ -5,15 +5,15 @@ Responsibilities
 ----------------
 1. Receive retrieved/reranked knowledge chunks.
 2. Build a clean grounded prompt.
-3. Call AgentRouter first, with an optional Conduit fallback.
+3. Call AgentRouter first, with optional Conduit and local-model fallbacks.
 4. Support OpenAI-compatible tool calling.
 5. Automatically add temporal history/forecast intelligence and support tools.
 6. Return a RAGResponse to the FastAPI layer.
 
 LLM providers
 -------------
-AgentRouter is primary. Conduit is used only when configured and the primary
-provider is missing or fails with a retryable rate-limit/upstream error.
+AgentRouter is primary. Conduit is used when configured and a local
+Transformers model is the final fallback after remote providers fail.
 
 Configuration comes from .env:
 
@@ -24,6 +24,8 @@ Configuration comes from .env:
     CONDUIT_API_KEY
     CONDUIT_API_BASE_URL=https://conduit.ozdoev.net/v1
     CONDUIT_MODEL=claude-opus-4.8
+    LOCAL_LLM_MODEL=google/flan-t5-small
+    LOCAL_LLM_FALLBACK_ENABLED=true
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -103,6 +106,30 @@ CONDUIT_FALLBACK_ENABLED = os.getenv(
     "CONDUIT_FALLBACK_ENABLED",
     "true",
 ).strip().casefold() not in {"0", "false", "no", "off"}
+
+LOCAL_LLM_FALLBACK_ENABLED = os.getenv(
+    "LOCAL_LLM_FALLBACK_ENABLED",
+    "true",
+).strip().casefold() not in {"0", "false", "no", "off"}
+
+LOCAL_LLM_MODEL = os.getenv(
+    "LOCAL_LLM_MODEL",
+    "google/flan-t5-small",
+)
+
+LOCAL_LLM_DEVICE = os.getenv("LOCAL_LLM_DEVICE", "cpu").strip() or "cpu"
+LOCAL_LLM_LOCAL_FILES_ONLY = os.getenv(
+    "LOCAL_LLM_LOCAL_FILES_ONLY",
+    "true",
+).strip().casefold() not in {"0", "false", "no", "off"}
+LOCAL_LLM_MAX_INPUT_TOKENS = max(
+    128,
+    int(os.getenv("LOCAL_LLM_MAX_INPUT_TOKENS", "768")),
+)
+LOCAL_LLM_MAX_OUTPUT_TOKENS = max(
+    32,
+    int(os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "256")),
+)
 
 MAX_CONTEXT_TOKENS = 4096 - 512 - DEFAULT_MAX_TOKENS
 
@@ -185,9 +212,13 @@ FARM-LEVEL RECOMMENDATION REASONING
    screening ranges must not override crop-specific evidence.
 7. Never diagnose a nutrient deficiency merely because its number is smaller
    than another nutrient value. If crop-specific targets, pH, soil type, growth
-   stage, or a representative soil test are required but unavailable, describe
-   the nutrient result as something to investigate. Do not invent a fertiliser
-   product rate, lime rate, or amendment dose.
+   stage, or another field measurement required for an exact treatment is
+   unavailable, describe the specific limitation. When relevant knowledge-base
+   context is supplied, use it directly for interpretation instead of asking the
+   user to seek third-party verification for guidance already available here.
+   Recommend a calibrated field or laboratory measurement only when telemetry
+   does not contain the measurement needed to calculate a safe application rate.
+   Do not invent a fertiliser product rate, lime rate, or amendment dose.
 8. If all important readings are acceptable, say that no major sensor-based
    correction is currently required. Give only one to three crop- and season-
    appropriate preventive or improvement actions supported by the available
@@ -251,6 +282,170 @@ class _LLMProvider:
     name: str
     client: Any
     model: str
+
+
+def _extract_local_prompt_section(content: str, header: str, next_header: str) -> str:
+    """Extract one bounded section from the large RAG prompt."""
+    start = content.find(header)
+    if start < 0:
+        return ""
+    end = content.find(next_header, start + len(header))
+    return content[start:end if end >= 0 else None].strip()
+
+
+def _build_local_prompt(messages: list[dict[str, Any]]) -> str:
+    """Compact chat messages so a small offline model retains the useful evidence."""
+    user_messages = [
+        str(message.get("content") or "")
+        for message in messages
+        if message.get("role") == "user"
+    ]
+    latest_user = user_messages[-1] if user_messages else ""
+    snapshot = _extract_local_prompt_section(
+        latest_user,
+        "LIVE FARM SNAPSHOT",
+        "TEMPORAL FARM ANALYSIS",
+    )
+    priority = _extract_local_prompt_section(
+        latest_user,
+        "FARM-LEVEL PRIORITY BRIEF",
+        "KNOWLEDGE-BASE CONTEXT",
+    )
+    knowledge = _extract_local_prompt_section(
+        latest_user,
+        "KNOWLEDGE-BASE CONTEXT",
+        "CURRENT USER QUESTION",
+    )
+    question = _extract_local_prompt_section(
+        latest_user,
+        "CURRENT USER QUESTION",
+        "\0",
+    )
+
+    # Keep the question and retrieved knowledge first so tokenizer truncation
+    # cannot drop either when a farm-wide snapshot is large. Each provider now
+    # reasons over the same RAG evidence; this local copy is merely compacted.
+    evidence = "\n\n".join(
+        part
+        for part in (
+            question[-800:],
+            knowledge[:2000],
+            priority[:1400],
+            snapshot[:1400],
+        )
+        if part
+    )
+    if not evidence:
+        evidence = latest_user[-6000:]
+
+    tool_results = [
+        str(message.get("content") or "")
+        for message in messages
+        if message.get("role") == "tool"
+    ]
+    if tool_results:
+        evidence += "\n\nTOOL RESULTS\n" + "\n".join(tool_results[-3:])
+
+    return (
+        "You are Soil Doctor. Give a concise, practical farm assessment using only "
+        "the supplied telemetry and retrieved knowledge-base evidence. Use the "
+        "knowledge directly; do not ask the user to seek third-party verification "
+        "for guidance already supported here. Do not invent sensor values, crops, "
+        "diagnoses, or application rates. State the exact missing measurement only "
+        "when it is necessary for a safe treatment calculation.\n\n"
+        f"{evidence}"
+    )
+
+
+class _LocalTransformersCompletions:
+    def __init__(self, owner: "_LocalTransformersClient") -> None:
+        self._owner = owner
+
+    def create(self, **kwargs: Any) -> str:
+        return self._owner.generate(
+            messages=kwargs.get("messages") or [],
+            requested_tokens=kwargs.get("max_tokens"),
+        )
+
+
+class _LocalTransformersChat:
+    def __init__(self, owner: "_LocalTransformersClient") -> None:
+        self.completions = _LocalTransformersCompletions(owner)
+
+
+class _LocalTransformersClient:
+    """Lazy, in-process Hugging Face fallback with an OpenAI-like interface."""
+
+    def __init__(self, model_name: str) -> None:
+        self.model_name = model_name
+        self.chat = _LocalTransformersChat(self)
+        self._tokenizer: Any = None
+        self._model: Any = None
+        self._load_lock = threading.Lock()
+
+    def _ensure_loaded(self) -> None:
+        if self._tokenizer is not None and self._model is not None:
+            return
+        with self._load_lock:
+            if self._tokenizer is not None and self._model is not None:
+                return
+            try:
+                from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Local LLM fallback requires the transformers package."
+                ) from exc
+
+            logger.warning("Loading local LLM model=%s device=%s", self.model_name, LOCAL_LLM_DEVICE)
+            self._tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name,
+                local_files_only=LOCAL_LLM_LOCAL_FILES_ONLY,
+            )
+            self._model = AutoModelForSeq2SeqLM.from_pretrained(
+                self.model_name,
+                local_files_only=LOCAL_LLM_LOCAL_FILES_ONLY,
+            )
+            self._model.to(LOCAL_LLM_DEVICE)
+            self._model.eval()
+
+    def generate(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        requested_tokens: Any = None,
+    ) -> str:
+        self._ensure_loaded()
+        prompt = _build_local_prompt(messages)
+        encoded = self._tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=LOCAL_LLM_MAX_INPUT_TOKENS,
+        )
+        encoded = {
+            key: value.to(LOCAL_LLM_DEVICE)
+            for key, value in encoded.items()
+        }
+        try:
+            output_tokens = int(requested_tokens or LOCAL_LLM_MAX_OUTPUT_TOKENS)
+        except (TypeError, ValueError):
+            output_tokens = LOCAL_LLM_MAX_OUTPUT_TOKENS
+        output_tokens = min(max(output_tokens, 32), LOCAL_LLM_MAX_OUTPUT_TOKENS)
+
+        generated = self._model.generate(
+            **encoded,
+            max_new_tokens=output_tokens,
+            do_sample=False,
+            num_beams=1,
+        )
+        answer = self._tokenizer.decode(generated[0], skip_special_tokens=True).strip()
+        if not answer:
+            raise RuntimeError("The local LLM returned an empty response.")
+        return answer
+
+
+_LOCAL_LLM_CLIENT: _LocalTransformersClient | None = None
+_LOCAL_LLM_CLIENT_LOCK = threading.Lock()
 
 
 # ============================================================================
@@ -422,6 +617,17 @@ def _create_conduit_client(api_key: str) -> Any:
     )
 
 
+def _create_local_llm_client(model_name: str = LOCAL_LLM_MODEL) -> _LocalTransformersClient:
+    """Return the shared lazy local-model client."""
+    global _LOCAL_LLM_CLIENT
+    if _LOCAL_LLM_CLIENT is not None and _LOCAL_LLM_CLIENT.model_name == model_name:
+        return _LOCAL_LLM_CLIENT
+    with _LOCAL_LLM_CLIENT_LOCK:
+        if _LOCAL_LLM_CLIENT is None or _LOCAL_LLM_CLIENT.model_name != model_name:
+            _LOCAL_LLM_CLIENT = _LocalTransformersClient(model_name)
+    return _LOCAL_LLM_CLIENT
+
+
 def _build_llm_providers(
     *,
     agentrouter_api_key: str | None,
@@ -469,13 +675,23 @@ def _build_llm_providers(
             "Conduit fallback is enabled but unavailable because CONDUIT_API_KEY is not configured."
         )
 
+    if LOCAL_LLM_FALLBACK_ENABLED:
+        providers.append(
+            _LLMProvider(
+                name="LocalLLM",
+                client=_create_local_llm_client(LOCAL_LLM_MODEL),
+                model=LOCAL_LLM_MODEL,
+            )
+        )
+
     if not providers:
         raise EnvironmentError(
-            "No LLM provider is configured. Set AGENTROUTER_API_KEY and/or CONDUIT_API_KEY."
+            "No LLM provider is configured. Enable the local fallback or set a remote provider key."
         ) from primary_error
     if primary_error is not None:
         logger.warning(
-            "AgentRouter is not configured; using Conduit as the active provider."
+            "AgentRouter is not configured; using %s as the active provider.",
+            providers[0].name,
         )
     return providers
 
@@ -538,38 +754,6 @@ def _is_retryable_provider_error(exc: BaseException) -> bool:
     return any(token in error_text for token in retryable_tokens)
 
 
-def _is_immediate_failover_error(exc: BaseException) -> bool:
-    """Identify exhausted limits where retrying the same provider is wasteful."""
-    chain: list[BaseException] = []
-    current: BaseException | None = exc
-    while current is not None and current not in chain:
-        chain.append(current)
-        current = current.__cause__ or current.__context__
-    for error in chain:
-        status = getattr(error, "status_code", None)
-        response_status = getattr(getattr(error, "response", None), "status_code", None)
-        for value in (status, response_status):
-            try:
-                if value is not None and int(value) in {402, 429}:
-                    return True
-            except (TypeError, ValueError):
-                continue
-    error_text = " ".join(str(error).casefold() for error in chain)
-    return any(
-        token in error_text
-        for token in (
-            "402",
-            "429",
-            "rate limit",
-            "usage limit",
-            "quota exceeded",
-            "model limit",
-            "spending limit",
-            "insufficient credit",
-            "credit balance",
-        )
-    )
-
 def _call_llm_with_retry(
     client: Any,
     model: str,
@@ -620,7 +804,7 @@ def _call_llm_with_retry(
 
             transient = _is_retryable_provider_error(exc)
 
-            if _is_immediate_failover_error(exc) or not transient or attempt >= API_RETRIES:
+            if not transient or attempt >= API_RETRIES:
                 raise RuntimeError(
                     f"{provider_name} API call failed: {exc}"
                 ) from exc
@@ -654,7 +838,7 @@ def _call_with_provider_fallback(
     tools: list[dict[str, Any]] | None = None,
     **kwargs: Any,
 ) -> tuple[Any, int]:
-    """Call the active provider and fail over only for retryable failures."""
+    """Call providers in order, ending with the local model when enabled."""
     if not providers:
         raise RuntimeError("No LLM providers are available.")
     last_error: Exception | None = None
@@ -674,11 +858,6 @@ def _call_with_provider_fallback(
             last_error = exc
             has_fallback = index + 1 < len(providers)
             retryable = _is_retryable_provider_error(exc)
-            if retryable and not has_fallback and provider.name == "AgentRouter":
-                raise RuntimeError(
-                    f"{exc} Conduit fallback is not configured; set CONDUIT_API_KEY "
-                    "in .env and restart the backend."
-                ) from exc
             if not has_fallback or not retryable:
                 raise
             next_provider = providers[index + 1]

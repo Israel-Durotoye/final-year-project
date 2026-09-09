@@ -828,7 +828,7 @@ class FarmRecommendationPlanner:
                 "evidence": [self._format_value("pH", ph_issue.measured_value)],
                 "recommended_objective": "Confirm the soil reaction and correct it before relying on nutrient additions.",
                 "supporting_steps": [
-                    "Confirm pH with a calibrated soil test.",
+                    "Use the calibrated pH sensor reading with the supplied crop-specific guidance.",
                     "Determine any amendment type and rate from soil texture/buffering information and crop requirement.",
                 ],
                 "monitor": ["soil pH"],
@@ -894,11 +894,11 @@ class FarmRecommendationPlanner:
                 "parameters": [issue.parameter for issue in nutrient_issues],
                 "evidence": evidence,
                 "recommended_objective": (
-                    "Verify the nutrient concern against crop- and growth-stage-specific targets before treatment."
+                    "Interpret the nutrient concern against crop- and growth-stage-specific knowledge before treatment."
                 ),
                 "supporting_steps": [
-                    "Obtain or confirm soil pH, crop growth stage, and a representative soil test.",
-                    "Use the confirmed crop requirement to select an amendment; do not infer a rate from relative N-P-K sizes.",
+                    "Use the supplied agronomic knowledge and available pH and crop context to interpret the N-P-K readings.",
+                    "Request only a specifically missing field measurement needed for an exact amendment rate; do not infer a rate from relative N-P-K sizes.",
                 ],
                 "monitor": [issue.parameter.lower() for issue in nutrient_issues],
                 "context_limits": (

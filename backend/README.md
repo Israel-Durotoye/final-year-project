@@ -37,9 +37,10 @@ uvicorn backend.main:app --reload --port 8000
 
 ### LLM provider fallback
 
-AgentRouter remains the primary provider. Configure Conduit to keep Soil Doctor
-available when AgentRouter hits a rate/usage limit, or exhausts retries because
-of timeouts, connection errors, or upstream 5xx failures:
+AgentRouter remains the primary provider. Each remote provider gets three
+attempts for rate limits, timeouts, connection failures, and upstream 5xx
+errors. Configure Conduit as the second provider; an in-process Transformers
+model is the final fallback and does not call an external API:
 
 ```dotenv
 AGENTROUTER_API_KEY=your-agentrouter-key
@@ -49,11 +50,21 @@ CONDUIT_API_KEY=sk-cdt-your-key
 CONDUIT_API_BASE_URL=https://conduit.ozdoev.net/v1
 CONDUIT_MODEL=claude-opus-4.8
 CONDUIT_FALLBACK_ENABLED=true
+
+LOCAL_LLM_FALLBACK_ENABLED=true
+LOCAL_LLM_MODEL=google/flan-t5-small
+LOCAL_LLM_DEVICE=cpu
+LOCAL_LLM_LOCAL_FILES_ONLY=true
 ```
 
 Authentication and invalid-request errors do not trigger fallback. The existing
 chat response contract is unchanged; its `model` field contains the model that
 actually produced the final answer.
+
+Download `LOCAL_LLM_MODEL` once before enabling offline-only mode. The local
+model is loaded lazily on the first fallback request and then retained in
+memory. Set `LOCAL_LLM_LOCAL_FILES_ONLY=false` for that initial download, then
+restore it to `true`.
 
 5.Example request (curl):
 

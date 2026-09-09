@@ -56,6 +56,28 @@ class FirebaseHardwareTests(unittest.TestCase):
         self.assertEqual(rows[0]["Latitude"], 9.532082)
         self.assertEqual(rows[0]["Device_Uptime_Seconds"], 1297)
 
+    @patch("backend.ml.firebase_hardware.urlopen")
+    def test_complete_loader_paginates_without_duplicating_boundary_rows(
+        self,
+        urlopen_mock: object,
+    ) -> None:
+        first_id = "-P0WR_Zl8PkYTF9bskHK"
+        second_id = "-P0WRaZl8PkYTF9bskHL"
+        first = {"node_id": "NODE_01", "nitrogen": 120}
+        second = {"node_id": "NODE_02", "nitrogen": 274}
+        urlopen_mock.side_effect = [  # type: ignore[attr-defined]
+            _Response({first_id: first}),
+            _Response({first_id: first, second_id: second}),
+            _Response({second_id: second}),
+        ]
+
+        rows = firebase_hardware.fetch_all_hardware_rows(page_size=1)
+
+        self.assertEqual([row["Node_ID"] for row in rows], ["NODE_01", "NODE_02"])
+        self.assertEqual(urlopen_mock.call_count, 3)  # type: ignore[attr-defined]
+        second_url = urlopen_mock.call_args_list[1].args[0]  # type: ignore[attr-defined]
+        self.assertIn("startAt", second_url)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,13 +11,13 @@ import {
   getSpatialLayerRadiusMeters,
   SpatialLayerType,
 } from "@/lib/mapSpatial";
-import { fetchTelemetry, latestTelemetryByNode } from "@/lib/telemetry";
+import { fetchTelemetry, latestTelemetryByNode, TelemetryRow } from "@/lib/telemetry";
 
 const MAP_REFRESH_INTERVAL_MS = 60_000;
 
 const MapView = () => {
   const [selected, setSelected] = useState<string | undefined>();
-  const [nodesLatest, setNodesLatest] = useState<Array<any>>([]);
+  const [nodesLatest, setNodesLatest] = useState<TelemetryRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeLayer, setActiveLayer] = useState<SpatialLayerType>("coverage");
@@ -39,9 +39,9 @@ const MapView = () => {
             ? current
             : latest[0]?.Node_ID
         ));
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (cancelled) return;
-        setError(err.message || String(err));
+        setError(err instanceof Error ? err.message : String(err));
         if (initialLoad) setNodesLatest([]);
       } finally {
         if (!cancelled && initialLoad) setLoading(false);

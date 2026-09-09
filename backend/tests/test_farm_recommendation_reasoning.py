@@ -77,6 +77,7 @@ class FarmRecommendationPlannerTests(unittest.TestCase):
         self.assertTrue(priority["context_limits"])
         self.assertIn("Nitrogen", brief["internal_parameter_classification"]["unknown_not_enough_context"])
         self.assertNotIn("kg/ha", json.dumps(priority))
+        self.assertNotIn("representative", json.dumps(priority).casefold())
 
     def test_scenario_e_crop_mismatch_remains_strategic(self) -> None:
         brief = self.planner.build_node_brief(

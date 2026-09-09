@@ -4,8 +4,9 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { MetricCard } from "@/components/MetricCard";
 import { MapPreview } from "@/components/MapPreview";
 import { TrendCharts } from "@/components/TrendCharts";
+import { Button } from "@/components/ui/button";
 import {
-  Radio, Leaf, FlaskConical, Droplets, CloudRain, Thermometer, Sprout, MapPin, Satellite, Bot
+  Radio, Leaf, FlaskConical, Droplets, CloudRain, Thermometer, Sprout, MapPin, Satellite, Bot, RefreshCw
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -13,19 +14,22 @@ import {
   activityCutoffIso,
   countActiveNodes,
 } from "@/lib/nodeActivity";
-import { fetchTelemetry, latestTelemetryByNode } from "@/lib/telemetry";
+import { fetchTelemetry, latestTelemetryByNode, TelemetryRow } from "@/lib/telemetry";
+import { readFieldReport, saveFieldReport } from "@/lib/fieldReportCache";
 
 const TELEMETRY_REFRESH_INTERVAL_MS = 30_000;
 
 const Dashboard = () => {
-  const [rows, setRows] = useState<Array<any>>([]);
-  const [latestNodes, setLatestNodes] = useState<Array<any>>([]);
+  const [rows, setRows] = useState<TelemetryRow[]>([]);
+  const [latestNodes, setLatestNodes] = useState<TelemetryRow[]>([]);
   const [activeNodeCount, setActiveNodeCount] = useState<number | null>(null);
   const [selected, setSelected] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [reportExpiresAt, setReportExpiresAt] = useState<number | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -44,8 +48,8 @@ const Dashboard = () => {
             ? current
             : latest[0]?.Node_ID
         ));
-      } catch (err: any) {
-        setError(err.message || String(err));
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : String(err));
         setRows([]);
         setLatestNodes([]);
       } finally {
@@ -87,46 +91,67 @@ const Dashboard = () => {
   }, []);
 
   useEffect(() => {
-    if (!selected || !latestNodes.length) return;
-    const nodeData = latestNodes.find(n => n.Node_ID === selected);
-    if (!nodeData) return;
-
-    let mounted = true;
-    const fetchStatus = async () => {
-      setStatusLoading(true);
+    setStatusError(null);
+    setStatusLoading(false);
+    if (!selected) {
       setStatusMessage(null);
-      try {
-        const telemetryContext = `Telemetry: Nitrogen=${nodeData.Nitrogen_mg_k}, Phosphorus=${nodeData.Phosphorus_m}, Potassium=${nodeData.Potassium_mg_}, Moisture=${nodeData["Moisture_%"]}%, Temp=${nodeData.Temperature_C}°C`;
-        const query = `Provide a single, clean sentence showing the status and any needed action for node ${selected}. ${telemetryContext}`;
+      setReportExpiresAt(null);
+      return;
+    }
 
-        const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
-        const res = await fetch(`${API_BASE}/chat/`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query, top_k: 1 })
-        });
+    const cached = readFieldReport(selected);
+    setStatusMessage(cached?.report ?? null);
+    setReportExpiresAt(cached?.expiresAt ?? null);
+  }, [selected]);
 
-        if (!res.ok) throw new Error("Failed to fetch status");
-        const data = await res.json();
-
-        if (mounted) {
-          // Clean up formatting to ensure it's a single clean sentence
-          let msg = data.answer.replace(/\*\*[^*]+\*\*/g, '').replace(/\n/g, ' ').trim();
-          setStatusMessage(msg);
-        }
-      } catch (err) {
-        if (mounted) setStatusMessage("Status currently unavailable.");
-      } finally {
-        if (mounted) setStatusLoading(false);
-      }
-    };
-
-    fetchStatus();
-
-    return () => { mounted = false; };
-  }, [selected, latestNodes]);
+  useEffect(() => {
+    if (!reportExpiresAt) return;
+    const remaining = reportExpiresAt - Date.now();
+    if (remaining <= 0) {
+      setStatusMessage(null);
+      setReportExpiresAt(null);
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      setStatusMessage(null);
+      setReportExpiresAt(null);
+    }, remaining);
+    return () => window.clearTimeout(timeoutId);
+  }, [reportExpiresAt]);
 
   const node = latestNodes.find((n) => n.Node_ID === selected) ?? latestNodes[0];
+
+  const getFieldReport = async () => {
+    if (!selected || !node || statusLoading) return;
+    setStatusLoading(true);
+    setStatusError(null);
+
+    try {
+      const telemetryContext = `Telemetry: Nitrogen=${node.Nitrogen_mg_k}, Phosphorus=${node.Phosphorus_m}, Potassium=${node.Potassium_mg_}, Moisture=${node["Moisture_%"]}%, Temp=${node.Temperature_C}°C`;
+      const query = `Provide a single, clean sentence showing the status and any needed action for node ${selected}. ${telemetryContext}`;
+      const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
+      const res = await fetch(`${API_BASE}/chat/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, node_id: selected, top_k: 1 }),
+      });
+      if (!res.ok) throw new Error(`Field Report request failed (${res.status})`);
+
+      const data = await res.json();
+      const answer = typeof data?.answer === "string" ? data.answer : "";
+      const message = answer.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\s+/g, " ").trim();
+      if (!message) throw new Error("The Field Report response was empty");
+
+      const cached = saveFieldReport(selected, message);
+      setStatusMessage(cached.report);
+      setReportExpiresAt(cached.expiresAt);
+    } catch (err: unknown) {
+      setStatusError(err instanceof Error ? err.message : "Field Report is currently unavailable.");
+      setStatusMessage((current) => current || "Field Report is currently unavailable. Please try again.");
+    } finally {
+      setStatusLoading(false);
+    }
+  };
 
   return (
     <>
@@ -147,11 +172,11 @@ const Dashboard = () => {
 
         {/* AI Status Panel */}
         <section className="bg-card border border-border rounded-xl shadow-card overflow-hidden">
-          <div className="p-5 flex items-start gap-4">
+          <div className="p-5 flex flex-col gap-4 sm:flex-row sm:items-start">
             <div className="bg-primary/10 p-3 rounded-full text-primary mt-1">
               <Bot className="h-6 w-6" />
             </div>
-            <div className="flex-1">
+            <div className="flex-1 min-w-0">
               <h2 className="text-lg font-semibold flex items-center gap-2">
                 Field Report
                 {selected && (
@@ -162,10 +187,22 @@ const Dashboard = () => {
                 {statusLoading ? (
                   <span className="animate-pulse">Checking your field...</span>
                 ) : (
-                  <span>{statusMessage || "Select a node to view its status."}</span>
+                  <span>{statusMessage || (selected ? "Press Get Field Report when you want a new assessment." : "Select a node to view its status.")}</span>
                 )}
               </div>
+              {statusError && statusMessage !== "Field Report is currently unavailable. Please try again." && (
+                <p className="mt-2 text-xs text-destructive">{statusError}. The previous report remains visible.</p>
+              )}
             </div>
+            <Button
+              type="button"
+              onClick={getFieldReport}
+              disabled={!selected || !node || statusLoading}
+              className="shrink-0"
+            >
+              <RefreshCw className={cn("h-4 w-4 mr-2", statusLoading && "animate-spin")} />
+              Get Field Report
+            </Button>
           </div>
         </section>
 

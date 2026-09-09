@@ -24,7 +24,7 @@ class ProviderFallbackTests(unittest.TestCase):
         self.assertFalse(chat_llm._is_retryable_provider_error(_StatusError(401, "unauthorized")))
         self.assertFalse(chat_llm._is_retryable_provider_error(ValueError("invalid messages")))
 
-    def test_rate_limit_does_not_repeat_requests_to_same_provider(self) -> None:
+    def test_rate_limit_retries_provider_three_times(self) -> None:
         calls = 0
 
         class Completions:
@@ -41,7 +41,7 @@ class ProviderFallbackTests(unittest.TestCase):
                 [{"role": "user", "content": "hello"}],
                 provider_name="AgentRouter",
             )
-        self.assertEqual(calls, 1)
+        self.assertEqual(calls, 3)
 
     def test_agentrouter_rate_limit_falls_back_to_conduit(self) -> None:
         primary_client = object()
@@ -106,20 +106,29 @@ class ProviderFallbackTests(unittest.TestCase):
                 )
         self.assertEqual(call.call_count, 1)
 
-    def test_retryable_error_explains_when_conduit_key_is_missing(self) -> None:
+    def test_retryable_remote_error_falls_back_to_local_model(self) -> None:
+        local_client = object()
         providers = [
             chat_llm._LLMProvider("AgentRouter", object(), "primary-model"),
+            chat_llm._LLMProvider("LocalLLM", local_client, "local-model"),
         ]
-        with patch.object(
-            chat_llm,
-            "_call_llm_with_retry",
-            side_effect=RuntimeError("AgentRouter API call failed: 402 budget quota exhausted"),
-        ):
-            with self.assertRaisesRegex(RuntimeError, "CONDUIT_API_KEY"):
-                chat_llm._call_with_provider_fallback(
-                    providers,
-                    [{"role": "user", "content": "hello"}],
-                )
+        calls: list[object] = []
+
+        def fake_call(client, *_args, **_kwargs):
+            calls.append(client)
+            if client is local_client:
+                return "Offline answer"
+            raise RuntimeError("AgentRouter API call failed: 503 service unavailable")
+
+        with patch.object(chat_llm, "_call_llm_with_retry", side_effect=fake_call):
+            response, provider_index = chat_llm._call_with_provider_fallback(
+                providers,
+                [{"role": "user", "content": "hello"}],
+            )
+
+        self.assertEqual(response, "Offline answer")
+        self.assertEqual(provider_index, 1)
+        self.assertEqual(calls, [providers[0].client, local_client])
 
     def test_tool_followup_can_switch_to_conduit(self) -> None:
         primary_client = object()
@@ -188,6 +197,7 @@ class ProviderFallbackTests(unittest.TestCase):
 
     def test_conduit_can_run_when_agentrouter_key_is_absent(self) -> None:
         fallback_client = object()
+        local_client = object()
         with (
             patch.object(
                 chat_llm,
@@ -200,15 +210,36 @@ class ProviderFallbackTests(unittest.TestCase):
                 return_value=("fallback-key", "test"),
             ),
             patch.object(chat_llm, "_create_conduit_client", return_value=fallback_client),
+            patch.object(chat_llm, "_create_local_llm_client", return_value=local_client),
         ):
             providers = chat_llm._build_llm_providers(
                 agentrouter_api_key=None,
                 agentrouter_model="primary-model",
                 conduit_model="claude-opus-4.8",
             )
-        self.assertEqual(len(providers), 1)
+        self.assertEqual(len(providers), 2)
         self.assertEqual(providers[0].name, "Conduit")
         self.assertIs(providers[0].client, fallback_client)
+        self.assertEqual(providers[1].name, "LocalLLM")
+        self.assertIs(providers[1].client, local_client)
+
+    def test_local_prompt_keeps_snapshot_and_current_question(self) -> None:
+        prompt = chat_llm._build_local_prompt([{
+            "role": "user",
+            "content": (
+                "LIVE FARM SNAPSHOT\n{\"node_id\": \"NODE_01\", \"moisture\": 32}\n\n"
+                "TEMPORAL FARM ANALYSIS\n{}\n\n"
+                "FARM-LEVEL PRIORITY BRIEF\nMonitor moisture.\n\n"
+                "KNOWLEDGE-BASE CONTEXT\nApply crop-specific nutrient guidance.\n\n"
+                "CURRENT USER QUESTION\nGive me a field report."
+            ),
+        }])
+
+        self.assertIn("NODE_01", prompt)
+        self.assertIn("Monitor moisture", prompt)
+        self.assertIn("Give me a field report", prompt)
+        self.assertIn("Apply crop-specific nutrient guidance", prompt)
+        self.assertNotIn("representative", prompt.casefold())
 
 
 if __name__ == "__main__":

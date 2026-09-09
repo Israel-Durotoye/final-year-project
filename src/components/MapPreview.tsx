@@ -1,8 +1,8 @@
-import { useState, useMemo, useEffect } from "react";
+import { useMemo, useEffect } from "react";
 import { MapContainer, TileLayer, Marker, Tooltip, Polygon, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import { Layers, Map as MapIcon, Maximize } from "lucide-react";
+import { Maximize } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   getMapCoordinate,
@@ -21,7 +21,11 @@ interface Props {
 }
 
 // Center map helper component
-const DEFAULT_CENTER: [number, number] = [8.48225, 4.54225];
+const DEFAULT_CENTER: [number, number] = [9.5325, 6.4525];
+export const OPENSTREETMAP_TILE_URL = "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png";
+export const OPENSTREETMAP_ATTRIBUTION = (
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+);
 
 const MapViewport = ({ coordinates }: { coordinates: [number, number][] }) => {
   const map = useMap();
@@ -70,8 +74,6 @@ const ZoomResetControl = ({ coordinates }: { coordinates: [number, number][] }) 
 };
 
 export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, interactive = true, children }: Props) => {
-  const [mapStyle, setMapStyle] = useState<"street" | "satellite">("satellite");
-
   // Normalize nodes (handles Supabase schema)
   const normalizedNodes = useMemo(() => {
     return nodes.map((n) => {
@@ -143,17 +145,11 @@ export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, inter
         <MapViewport coordinates={coordinates} />
         {interactive && <ZoomResetControl coordinates={coordinates} />}
         
-        {mapStyle === "street" ? (
-          <TileLayer
-            url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> contributors'
-          />
-        ) : (
-          <TileLayer
-            url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
-            attribution="Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community"
-          />
-        )}
+        <TileLayer
+          url={OPENSTREETMAP_TILE_URL}
+          attribution={OPENSTREETMAP_ATTRIBUTION}
+          maxZoom={19}
+        />
 
         {/* Dotted lines connecting nodes */}
         {perimeterCoordinates.length > 2 && (
@@ -192,31 +188,6 @@ export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, inter
         ))}
       </MapContainer>
 
-      {/* Aesthetic Layer Toggle */}
-      {interactive && (
-        <div className="absolute top-4 right-4 z-[400] flex bg-background/80 backdrop-blur-md border border-white/10 rounded-lg p-1 shadow-lg">
-          <button
-            onClick={() => setMapStyle("street")}
-            className={cn(
-              "px-3 py-1.5 rounded-md text-[10px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all",
-              mapStyle === "street" ? "bg-primary text-primary-foreground shadow-sm" : "text-foreground/60 hover:text-foreground"
-            )}
-            type="button"
-          >
-            <MapIcon className="h-3 w-3" /> Map
-          </button>
-          <button
-            onClick={() => setMapStyle("satellite")}
-            className={cn(
-              "px-3 py-1.5 rounded-md text-[10px] font-mono font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all",
-              mapStyle === "satellite" ? "bg-primary text-primary-foreground shadow-sm" : "text-foreground/60 hover:text-foreground"
-            )}
-            type="button"
-          >
-            <Layers className="h-3 w-3" /> Sat
-          </button>
-        </div>
-      )}
     </div>
   );
 };

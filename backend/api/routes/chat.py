@@ -418,8 +418,7 @@ async def post_chat(request: ChatRequest) -> ChatResponse:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
                 "Server configuration error: no LLM provider key is available. "
-                "Set AGENTROUTER_API_KEY for the primary provider and/or "
-                "CONDUIT_API_KEY for the Conduit fallback."
+                "Enable LOCAL_LLM_FALLBACK_ENABLED or configure an AgentRouter/Conduit key."
             ),
         ) from exc
     except RuntimeError as exc:

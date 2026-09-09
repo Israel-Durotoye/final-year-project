@@ -34,6 +34,10 @@ active-node counters also refresh automatically. Hardware rows are normalized
 in `src/lib/telemetry.ts`, so the rest of the frontend can continue using the
 existing `Node_ID`, `Timestamp`, and sensor column names.
 
+Dashboard Field Reports are generated only when **Get Field Report** is pressed.
+A successful report is retained per node in the browser for 30 minutes, so
+telemetry refreshes do not continually replace it.
+
 By default, the simulator places `NODE_04`, `NODE_05`, and `NODE_06` in a
 140-metre GPS cluster inside FUT Minna's Gidan Kwano main campus. Override
 `FUT_MINNA_CENTER_LATITUDE`, `FUT_MINNA_CENTER_LONGITUDE`, or
