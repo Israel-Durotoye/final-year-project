@@ -9,7 +9,7 @@ os.environ["KERAS_BACKEND"] = "torch"
 import json
 import logging
 import pathlib
-from typing import Optional
+from typing import Any, Optional
 
 import joblib
 import numpy as np
@@ -51,7 +51,7 @@ def load_artifacts():
     if _model is None:
         try:
             logger.info("Loading LSTM crop recommendation model...")
-            _model = keras.saving.load_model(MODEL_PATH)
+            _model = keras.models.load_model(MODEL_PATH)
             _imputer = joblib.load(IMPUTER_PATH)
             _scaler = joblib.load(SCALER_PATH)
             with open(LABELS_PATH, "r") as f:
@@ -61,6 +61,35 @@ def load_artifacts():
             return False
             
     return True
+
+def predict_ideal_crop_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Predict the best crop from one node's chronological sensor window."""
+    if not load_artifacts() or len(rows) < SEQUENCE_LENGTH:
+        return None
+
+    try:
+        df = pd.DataFrame(rows[-SEQUENCE_LENGTH:])
+        feature_frame = df[FEATURES].apply(pd.to_numeric, errors="coerce")
+        for feature, (lower, upper) in FEATURE_BOUNDS.items():
+            feature_frame.loc[~feature_frame[feature].between(lower, upper), feature] = np.nan
+        npk_features = ["Nitrogen_mg_k", "Phosphorus_m", "Potassium_mg_"]
+        feature_frame.loc[feature_frame[npk_features].eq(0).all(axis=1), npk_features] = np.nan
+        imputed_data = _imputer.transform(feature_frame)
+        scaled_data = _scaler.transform(imputed_data)
+        preds = _model.predict(np.expand_dims(scaled_data, axis=0), verbose=0)[0]
+        class_idx = int(np.argmax(preds))
+        return {
+            "crop": _labels.get(str(class_idx)),
+            "confidence": float(preds[class_idx]),
+            "class_probabilities": {
+                _labels.get(str(index), str(index)): float(probability)
+                for index, probability in enumerate(preds)
+            },
+        }
+    except Exception as exc:
+        logger.error("Prediction from sensor window failed: %s", exc)
+        return None
+
 
 def predict_ideal_crop(node_id: str) -> Optional[str]:
     """
@@ -97,30 +126,5 @@ def predict_ideal_crop(node_id: str) -> Optional[str]:
         logger.warning(f"Not enough data for {node_id}. Need {SEQUENCE_LENGTH}, got {len(data)}")
         return None
 
-    # Sort chronologically (oldest to newest)
-    data.reverse()
-
-    df = pd.DataFrame(data)
-    
-    try:
-        # Extract features and scale
-        feature_frame = df[FEATURES].apply(pd.to_numeric, errors="coerce")
-        for feature, (lower, upper) in FEATURE_BOUNDS.items():
-            feature_frame.loc[~feature_frame[feature].between(lower, upper), feature] = np.nan
-        npk_features = ["Nitrogen_mg_k", "Phosphorus_m", "Potassium_mg_"]
-        feature_frame.loc[feature_frame[npk_features].eq(0).all(axis=1), npk_features] = np.nan
-        imputed_data = _imputer.transform(feature_frame)
-        scaled_data = _scaler.transform(imputed_data)
-        
-        # Reshape to (1, SEQUENCE_LENGTH, num_features)
-        input_seq = np.expand_dims(scaled_data, axis=0)
-        
-        # Predict
-        preds = _model.predict(input_seq, verbose=0)
-        class_idx = np.argmax(preds, axis=1)[0]
-        
-        predicted_crop = _labels.get(str(class_idx))
-        return predicted_crop
-    except Exception as e:
-        logger.error(f"Prediction failed for {node_id}: {e}")
-        return None
+    prediction = predict_ideal_crop_from_rows(list(reversed(data)))
+    return prediction.get("crop") if prediction else None

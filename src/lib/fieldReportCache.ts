@@ -1,7 +1,7 @@
 export const FIELD_REPORT_TTL_MS = 30 * 60 * 1000;
 
 // Versioned so reports generated under an older prompt are not reused.
-const FIELD_REPORT_STORAGE_PREFIX = "soil-doctor-field-report:v2:";
+const FIELD_REPORT_STORAGE_PREFIX = "soil-doctor-field-report:v4:";
 
 export type CachedFieldReport = {
   nodeId: string;

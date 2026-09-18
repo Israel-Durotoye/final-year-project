@@ -3,6 +3,14 @@ import { supabase } from "@/lib/supabase";
 export const HARDWARE_NODE_IDS = ["NODE_01", "NODE_02"] as const;
 export const SIMULATOR_NODE_IDS = ["NODE_03", "NODE_04", "NODE_05", "NODE_06"] as const;
 
+// Keep simulator nodes in one farm footprint while retaining distinct field positions.
+const SIMULATOR_COORDINATES: Record<string, { Latitude: number; Longitude: number }> = {
+  NODE_03: { Latitude: 9.53141, Longitude: 6.45359 },
+  NODE_04: { Latitude: 9.53286, Longitude: 6.45359 },
+  NODE_05: { Latitude: 9.53309, Longitude: 6.45141 },
+  NODE_06: { Latitude: 9.53137, Longitude: 6.45141 },
+};
+
 const hardwareNodeIds = new Set<string>(HARDWARE_NODE_IDS);
 const simulatorNodeIds = new Set<string>(SIMULATOR_NODE_IDS);
 const FIREBASE_PUSH_ALPHABET = "-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
@@ -38,6 +46,7 @@ const timestampValue = (row: Pick<TelemetryRow, "Timestamp">) => {
 
 export const normalizeSimulatorTelemetry = (row: Record<string, unknown>): TelemetryRow => ({
   ...row,
+  ...(SIMULATOR_COORDINATES[normalizeNodeId(row.Node_ID)] ?? {}),
   Node_ID: normalizeNodeId(row.Node_ID),
   Timestamp: String(row.Timestamp ?? ""),
   Data_Source: "simulator",

@@ -20,7 +20,7 @@ Configuration comes from .env:
     AGENTROUTER_API_KEY
     AGENTROUTER_AUTH_TOKEN
     AGENTROUTER_API_BASE_URL=https://agentrouter.org
-    AGENTROUTER_MODEL=gpt-5.6-sol
+    AGENTROUTER_MODEL=deepseek-v4-flash
     CONDUIT_API_KEY
     CONDUIT_API_BASE_URL=https://conduit.ozdoev.net/v1
     CONDUIT_MODEL=claude-opus-4.8
@@ -57,6 +57,12 @@ except ImportError:
 
 from backend.ml import firebase_hardware
 from backend.rag import diagnostics, prescriptions
+from backend.rag.field_report import (
+    FIELD_REPORT_INSTRUCTION, REPORT_SECTIONS, build_report_evidence, report_content,
+    render_evidence_report, usable_local_report,
+    EVIDENCE_REPORT_NOTE,
+    FIELD_SUMMARY_INSTRUCTION, normalize_field_summary, render_field_summary,
+)
 from backend.utils.season import get_nigerian_season
 
 try:
@@ -78,7 +84,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = os.getenv(
     "AGENTROUTER_MODEL",
-    "gpt-5.6-sol",
+    "deepseek-v4-flash",
 )
 
 DEFAULT_TEMPERATURE = 0.3
@@ -210,7 +216,12 @@ FARM-LEVEL RECOMMENDATION REASONING
    candidate issues against the live snapshot, the planted crop, season, and
    supplied agronomic knowledge. The brief is not a new measurement and generic
    screening ranges must not override crop-specific evidence.
-7. Never diagnose a nutrient deficiency merely because its number is smaller
+7. The live sensor suite measures nitrogen, phosphorus, potassium, soil
+    moisture, temperature, and humidity. Soil pH is not measured by these
+    sensors. Never ask the farmer for a pH value as a prerequisite for a normal
+    sensor analysis; treat pH as unavailable unless the farmer explicitly
+    provides a separate test result.
+8. Never diagnose a nutrient deficiency merely because its number is smaller
    than another nutrient value. If crop-specific targets, pH, soil type, growth
    stage, or another field measurement required for an exact treatment is
    unavailable, describe the specific limitation. When relevant knowledge-base
@@ -219,7 +230,7 @@ FARM-LEVEL RECOMMENDATION REASONING
    Recommend a calibrated field or laboratory measurement only when telemetry
    does not contain the measurement needed to calculate a safe application rate.
    Do not invent a fertiliser product rate, lime rate, or amendment dose.
-8. If all important readings are acceptable, say that no major sensor-based
+9. If all important readings are acceptable, say that no major sensor-based
    correction is currently required. Give only one to three crop- and season-
    appropriate preventive or improvement actions supported by the available
    evidence. Never invent a problem so the report sounds useful.
@@ -233,6 +244,20 @@ DEFAULT PRESENTATION FOR FARM ASSESSMENTS
   the stated priority.
 - Aim for three to six actionable points total, preferably fewer. The answer
   must not get longer merely because more sensors are present.
+""".strip()
+
+WIDGET_SYSTEM_INSTRUCTION = """
+You are the quick Soil Doctor helper inside a small farm widget.
+
+Keep every reply warm, conversational, and brief: use 1-3 short sentences or
+at most 3 compact bullets. Answer the user's immediate question first. Ask one
+clear follow-up question only when the request is genuinely unclear or a
+missing detail changes the advice. Offer one practical next step when useful.
+Use light, clean humor occasionally, never at the farmer's expense. Do not
+write a report, repeat the full sensor snapshot, add formal sections, or send
+the user to the full assistant. The live sensors measure nitrogen, phosphorus,
+potassium, moisture, temperature, and humidity; pH is unavailable unless the
+farmer explicitly supplies a separate test result.
 """.strip()
 
 
@@ -301,6 +326,8 @@ def _build_local_prompt(messages: list[dict[str, Any]]) -> str:
         if message.get("role") == "user"
     ]
     latest_user = user_messages[-1] if user_messages else ""
+    if latest_user.startswith(("FIELD REPORT EVIDENCE\n", "FIELD SUMMARY EVIDENCE\n")):
+        return latest_user
     snapshot = _extract_local_prompt_section(
         latest_user,
         "LIVE FARM SNAPSHOT",
@@ -414,8 +441,25 @@ class _LocalTransformersClient:
         messages: list[dict[str, Any]],
         requested_tokens: Any = None,
     ) -> str:
-        self._ensure_loaded()
         prompt = _build_local_prompt(messages)
+        if prompt.startswith(("FIELD REPORT EVIDENCE\n", "FIELD SUMMARY EVIDENCE\n")):
+            # Small seq2seq models tend to answer a multi-section instruction
+            # with one sentence. Give each section its own focused generation
+            # budget and assemble the headings ourselves.
+            try:
+                self._ensure_loaded()
+                return self._generate_field_report(prompt)
+            except (RuntimeError, OSError, ImportError):
+                logger.warning("Local report generation unavailable; using sensor screening.", exc_info=True)
+                facts_text = prompt.partition("\n\nSUPPORTING GUIDANCE\n")[0]
+                facts = json.loads(facts_text.split("\n", 1)[1])
+                if prompt.startswith("FIELD SUMMARY EVIDENCE\n"):
+                    return render_field_summary(facts) + "\n\n" + EVIDENCE_REPORT_NOTE
+                return render_evidence_report(facts)
+        self._ensure_loaded()
+        return self._generate_text(prompt, requested_tokens)
+
+    def _generate_text(self, prompt: str, requested_tokens: Any = None) -> str:
         encoded = self._tokenizer(
             prompt,
             return_tensors="pt",
@@ -442,6 +486,55 @@ class _LocalTransformersClient:
         if not answer:
             raise RuntimeError("The local LLM returned an empty response.")
         return answer
+
+    def _generate_field_report(self, content: str) -> str:
+        facts_text, _, guidance = content.partition("\n\nSUPPORTING GUIDANCE\n")
+        is_summary = content.startswith("FIELD SUMMARY EVIDENCE\n")
+        facts = json.loads(facts_text.split("\n", 1)[1])
+        brief = facts.get("priority_brief", {})
+        # Allocate tokens to each evidence type before generation. Long retrieved
+        # documents must not displace the selected node's measurements or history.
+        history = {sensor: {key: metrics[key] for key in ("trend", "samples", "event") if key in metrics}
+                   for sensor, metrics in (facts.get("observed_history") or {}).items()
+                   if isinstance(metrics, dict)}
+        groups = [
+            ("Current measurements", facts.get("current_measurements"), 0.30),
+            ("History and data quality", {
+                "quality": facts.get("data_quality"),
+                "period": facts.get("reporting_period"),
+                "history": history or {"status": "unavailable"},
+            }, 0.20),
+            ("Forecast", {
+                "status": facts.get("forecast_status"),
+                "estimates": facts.get("future_estimates"),
+            }, 0.10),
+            ("Priority brief", brief, 0.25),
+            ("Supporting guidance", guidance, 0.15),
+        ]
+        sections = []
+        tasks = (("Field summary", FIELD_SUMMARY_INSTRUCTION),) if is_summary else REPORT_SECTIONS
+        for heading, task in tasks:
+            instruction = (
+                f"Write the {heading} section of a field report for {facts['selected_node']}. "
+                f"{task} Use only the evidence below. Missing forecasts are not evidence of stability. "
+                "Do not invent measurements, crops, causes, predictions or doses.\n"
+            )
+            remaining = max(0, LOCAL_LLM_MAX_INPUT_TOKENS - len(self._tokenizer.encode(instruction)) - 40)
+            blocks = []
+            for label, value, share in groups:
+                text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+                tokens = self._tokenizer.encode(text, add_special_tokens=False)
+                bounded = self._tokenizer.decode(tokens[:int(remaining * share)], skip_special_tokens=True)
+                blocks.append(f"{label}: {bounded}")
+            answer = self._generate_text(instruction + "\n".join(blocks), 192)
+            sections.append(answer)
+        if is_summary:
+            summary = normalize_field_summary(sections[0])
+            return summary or (render_field_summary(facts) + "\n\n" + EVIDENCE_REPORT_NOTE)
+        if not usable_local_report(sections):
+            logger.warning("Local field report failed presentation checks; returning an evidence-based screening report.")
+            return render_evidence_report(facts)
+        return "\n\n".join(f"### {heading}\n{answer}" for (heading, _), answer in zip(REPORT_SECTIONS, sections))
 
 
 _LOCAL_LLM_CLIENT: _LocalTransformersClient | None = None
@@ -783,6 +876,15 @@ def _call_llm_with_retry(
                 "messages": messages,
                 **kwargs,
             }
+            if model.casefold().startswith("deepseek"):
+                # Reports already receive a prepared evidence brief. Disable
+                # DeepSeek's default thinking mode so the small output budget
+                # is available for the answer rather than reasoning tokens.
+                # An explicit caller setting still takes precedence.
+                request_kwargs["extra_body"] = {
+                    "thinking": {"type": "disabled"},
+                    **(request_kwargs.get("extra_body") or {}),
+                }
 
             if tools is not None:
                 request_kwargs["tools"] = tools
@@ -1593,7 +1695,6 @@ def _get_live_sensor_data(node_id: str) -> dict[str, Any]:
             "moisture": row.get("Moisture_%"),
             "temperature": row.get("Temperature_C"),
             "humidity": row.get("Humidity_%"),
-            "ph": row.get("Soil_pH"),
             "latitude": row.get("Latitude"),
             "longitude": row.get("Longitude"),
             "gps_source": row.get("GPS_Source"),
@@ -1759,6 +1860,11 @@ def _assistant_message_to_dict(message: Any) -> dict[str, Any]:
         "role": "assistant",
         "content": content,
     }
+    reasoning_content = getattr(message, "reasoning_content", None)
+    if isinstance(reasoning_content, str):
+        # DeepSeek requires this field in tool follow-ups when a caller opts
+        # into thinking mode. Keep it internal; only content is shown to users.
+        result["reasoning_content"] = reasoning_content
 
     if tool_calls:
         result["tool_calls"] = [
@@ -1887,6 +1993,7 @@ def generate_rag_response(
     *,
     conversation_history: list[dict[str, str]] | None = None,
     node_id: str | None = None,
+    response_mode: str = "chat",
     model_name: str = DEFAULT_MODEL,
     api_key: str | None = None,
     fallback_api_key: str | None = None,
@@ -1902,6 +2009,10 @@ def generate_rag_response(
     """
 
     start_time = time.perf_counter()
+    is_field_assessment = response_mode in {"field_report", "field_summary"}
+    is_widget = response_mode == "widget"
+    if is_field_assessment and not node_id:
+        raise ValueError("A field report requires a selected node.")
 
     # ------------------------------------------------------------------
     # 1. Select relevant RAG chunks
@@ -1935,6 +2046,10 @@ def generate_rag_response(
     # ------------------------------------------------------------------
 
     farm_snapshot = _get_farm_snapshot()
+    if is_field_assessment:
+        selected_nodes = [item for item in farm_snapshot.get("nodes", [])
+                          if str(item.get("node_id", "")).upper() == node_id.upper()]
+        farm_snapshot = {**farm_snapshot, "nodes": selected_nodes, "node_count": len(selected_nodes)}
 
     logger.info(
         "Farm snapshot | status=%s | nodes=%d",
@@ -1958,19 +2073,23 @@ def generate_rag_response(
     # 3. Build the LLM messages
     # ------------------------------------------------------------------
 
-    user_content = _build_user_content(
-        user_query,
-        context_block,
-        bool(qualifying_chunks),
-        farm_snapshot,
-        conversation_history,
-        temporal_context,
-    )
+    if is_field_assessment:
+        report_evidence = build_report_evidence(farm_snapshot, temporal_context, node_id)
+        user_content = report_content(
+            report_evidence, context_block, summary=response_mode == "field_summary",
+        )
+    else:
+        user_content = _build_user_content(
+            user_query, context_block, bool(qualifying_chunks), farm_snapshot,
+            conversation_history, temporal_context,
+        )
 
     messages: list[dict[str, Any]] = [
         {
             "role": "system",
-            "content": SYSTEM_INSTRUCTION,
+            "content": (FIELD_SUMMARY_INSTRUCTION if response_mode == "field_summary" else
+                        FIELD_REPORT_INSTRUCTION if is_field_assessment else
+                        WIDGET_SYSTEM_INSTRUCTION if is_widget else SYSTEM_INSTRUCTION),
         },
         {
             "role": "user",
@@ -2011,9 +2130,11 @@ def generate_rag_response(
             providers,
             messages,
             active_index=active_provider_index,
-            tools=TOOLS,
+            tools=None if is_field_assessment else TOOLS,
             temperature=temperature,
-            max_tokens=max_output_tokens,
+            max_tokens=(min(max_output_tokens, 220) if is_widget else
+                        min(max_output_tokens, 192) if response_mode == "field_summary" else
+                        max_output_tokens),
             top_p=DEFAULT_TOP_P,
         )
 
@@ -2191,6 +2312,15 @@ def generate_rag_response(
 
     elapsed = time.perf_counter() - start_time
     active_provider = providers[active_provider_index]
+    evidence_fallback = is_field_assessment and answer_text.endswith(EVIDENCE_REPORT_NOTE)
+    if response_mode == "field_summary":
+        summary = normalize_field_summary(answer_text.removesuffix(EVIDENCE_REPORT_NOTE).strip())
+        unreliable = (report_evidence["current_measurements"].get("status") == "unavailable"
+                      or report_evidence["data_quality"].get("stale"))
+        if not summary or unreliable:
+            summary = render_field_summary(report_evidence)
+            evidence_fallback = True
+        answer_text = summary
 
     logger.info(
         "RAG response generated | time=%.3fs | provider=%s | model=%s | "
@@ -2208,17 +2338,18 @@ def generate_rag_response(
 
     return RAGResponse(
         answer=answer_text,
-        sources=sources,
-        chunks_used=len(qualifying_chunks),
+        sources=[] if evidence_fallback else sources,
+        chunks_used=0 if evidence_fallback else len(qualifying_chunks),
         chunks_above_threshold=len(qualifying_chunks),
         generation_time_seconds=round(
             elapsed,
             3,
         ),
-        model_name=active_provider.model,
+        model_name="sensor-screening-report" if evidence_fallback else active_provider.model,
         grounded=(
             bool(qualifying_chunks)
             and not was_truncated
+            and not evidence_fallback
         ),
         timestamp_utc=datetime.now(
             timezone.utc

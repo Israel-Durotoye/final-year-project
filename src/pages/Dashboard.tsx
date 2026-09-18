@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getNigerianSeason } from "@/lib/season";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { MetricCard } from "@/components/MetricCard";
@@ -16,6 +16,7 @@ import {
 } from "@/lib/nodeActivity";
 import { fetchTelemetry, latestTelemetryByNode, TelemetryRow } from "@/lib/telemetry";
 import { readFieldReport, saveFieldReport } from "@/lib/fieldReportCache";
+import { fetchCropRecommendations, formatCropRecommendation, CropRecommendation } from "@/lib/cropRecommendation";
 
 const TELEMETRY_REFRESH_INTERVAL_MS = 30_000;
 
@@ -29,7 +30,9 @@ const Dashboard = () => {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [statusLoading, setStatusLoading] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [cropRecommendations, setCropRecommendations] = useState<Record<string, CropRecommendation>>({});
   const [reportExpiresAt, setReportExpiresAt] = useState<number | null>(null);
+  const reportRequest = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -65,6 +68,15 @@ const Dashboard = () => {
   }, []);
 
   useEffect(() => {
+    if (!latestNodes.length) return;
+    let cancelled = false;
+    void fetchCropRecommendations(latestNodes.map((item) => item.Node_ID)).then((recommendations) => {
+      if (!cancelled) setCropRecommendations(recommendations);
+    });
+    return () => { cancelled = true; };
+  }, [latestNodes]);
+
+  useEffect(() => {
     let mounted = true;
 
     const fetchActiveNodeCount = async () => {
@@ -91,6 +103,7 @@ const Dashboard = () => {
   }, []);
 
   useEffect(() => {
+    reportRequest.current?.abort();
     setStatusError(null);
     setStatusLoading(false);
     if (!selected) {
@@ -102,6 +115,7 @@ const Dashboard = () => {
     const cached = readFieldReport(selected);
     setStatusMessage(cached?.report ?? null);
     setReportExpiresAt(cached?.expiresAt ?? null);
+    return () => reportRequest.current?.abort();
   }, [selected]);
 
   useEffect(() => {
@@ -125,31 +139,34 @@ const Dashboard = () => {
     if (!selected || !node || statusLoading) return;
     setStatusLoading(true);
     setStatusError(null);
+    const controller = new AbortController();
+    reportRequest.current = controller;
 
     try {
-      const telemetryContext = `Telemetry: Nitrogen=${node.Nitrogen_mg_k}, Phosphorus=${node.Phosphorus_m}, Potassium=${node.Potassium_mg_}, Moisture=${node["Moisture_%"]}%, Temp=${node.Temperature_C}°C`;
-      const query = `Provide a single, clean sentence showing the status and any needed action for node ${selected}. ${telemetryContext}`;
+      const query = `Summarise the selected field area (${selected}) in one short sentence for a farmer, using only the main condition or change in the latest readings and recorded period, plus one action if needed.`;
       const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
       const res = await fetch(`${API_BASE}/chat/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, node_id: selected, top_k: 1 }),
+        body: JSON.stringify({ query, node_id: selected, top_k: 5, response_mode: "field_summary" }),
+        signal: controller.signal,
       });
       if (!res.ok) throw new Error(`Field Report request failed (${res.status})`);
 
       const data = await res.json();
       const answer = typeof data?.answer === "string" ? data.answer : "";
-      const message = answer.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\s+/g, " ").trim();
+      const message = answer.trim();
       if (!message) throw new Error("The Field Report response was empty");
+      if (controller.signal.aborted) return;
 
       const cached = saveFieldReport(selected, message);
       setStatusMessage(cached.report);
       setReportExpiresAt(cached.expiresAt);
     } catch (err: unknown) {
+      if (controller.signal.aborted) return;
       setStatusError(err instanceof Error ? err.message : "Field Report is currently unavailable.");
-      setStatusMessage((current) => current || "Field Report is currently unavailable. Please try again.");
     } finally {
-      setStatusLoading(false);
+      if (!controller.signal.aborted) setStatusLoading(false);
     }
   };
 
@@ -184,14 +201,15 @@ const Dashboard = () => {
                 )}
               </h2>
               <div className="mt-2 text-muted-foreground text-sm leading-relaxed">
-                {statusLoading ? (
-                  <span className="animate-pulse">Checking your field...</span>
+                {statusMessage ? (
+                  <p aria-label="Field report">{statusMessage}</p>
                 ) : (
-                  <span>{statusMessage || (selected ? "Press Get Field Report when you want a new assessment." : "Select a node to view its status.")}</span>
+                  <span>{selected ? "Press Get Field Report for a quick summary of recent field conditions." : "Select a node to view its status."}</span>
                 )}
+                {statusLoading && <p role="status" className="mt-2 animate-pulse">Checking recent field conditions...</p>}
               </div>
-              {statusError && statusMessage !== "Field Report is currently unavailable. Please try again." && (
-                <p className="mt-2 text-xs text-destructive">{statusError}. The previous report remains visible.</p>
+              {statusError && (
+                <p role="alert" className="mt-2 text-xs text-destructive">{statusError}. {statusMessage ? "The previous report remains visible." : "Please try again."}</p>
               )}
             </div>
             <Button
@@ -212,7 +230,7 @@ const Dashboard = () => {
             <div>
               <h2 className="text-lg font-semibold">Sensor Readings</h2>
               <p className="text-sm text-muted-foreground">
-                Live {node?.Data_Source === "hardware" ? "hardware" : "simulator"} readings · {node?.Target_Crop ?? "-"} — {getNigerianSeason(node?.Timestamp)}
+                Live {node?.Data_Source === "hardware" ? "hardware" : "simulator"} readings · Recorded crop: {node?.Target_Crop ?? "none"} · Best crop: {formatCropRecommendation(node ? cropRecommendations[node.Node_ID] : undefined)} — {getNigerianSeason(node?.Timestamp)}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">

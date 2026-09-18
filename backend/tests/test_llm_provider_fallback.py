@@ -16,6 +16,24 @@ class _StatusError(RuntimeError):
 
 
 class ProviderFallbackTests(unittest.TestCase):
+    def test_deepseek_uses_answer_budget_and_preserves_explicit_thinking_setting(self) -> None:
+        from unittest.mock import Mock
+        client = Mock()
+        client.chat.completions.create.return_value = "Ready"
+        messages = [{"role": "user", "content": "Field report"}]
+        chat_llm._call_llm_with_retry(client, "deepseek-v4-flash", messages, max_tokens=1024)
+        self.assertEqual(client.chat.completions.create.call_args.kwargs["extra_body"], {"thinking": {"type": "disabled"}})
+        chat_llm._call_llm_with_retry(client, "deepseek-v4-flash", messages, extra_body={"thinking": {"type": "enabled"}})
+        self.assertEqual(client.chat.completions.create.call_args.kwargs["extra_body"]["thinking"]["type"], "enabled")
+        chat_llm._call_llm_with_retry(client, "another-model", messages)
+        self.assertNotIn("extra_body", client.chat.completions.create.call_args.kwargs)
+
+    def test_reasoning_is_preserved_for_tool_followup(self) -> None:
+        message = SimpleNamespace(content=None, reasoning_content="Internal model reasoning", tool_calls=[])
+        result = chat_llm._assistant_message_to_dict(message)
+        self.assertEqual(result["reasoning_content"], "Internal model reasoning")
+        self.assertIsNone(result["content"])
+
     def test_retryable_error_detection_is_scoped(self) -> None:
         self.assertTrue(chat_llm._is_retryable_provider_error(_StatusError(429, "rate limited")))
         self.assertTrue(chat_llm._is_retryable_provider_error(_StatusError(402, "usage limit reached")))

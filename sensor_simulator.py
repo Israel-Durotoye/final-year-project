@@ -90,7 +90,7 @@ def build_fut_minna_node_coordinates(
     center_longitude: float = FUT_MINNA_CENTER_LONGITUDE,
     radius_meters: float = FUT_MINNA_NODE_RADIUS_METERS,
 ) -> Dict[str, Dict[str, float]]:
-    """Place NODE_04-NODE_06 inside FUT Minna's Gidan Kwano campus."""
+    """Place all simulator nodes inside FUT Minna's Gidan Kwano campus."""
     latitude_degrees_per_meter = 1.0 / 111_320.0
     longitude_degrees_per_meter = 1.0 / (
         111_320.0 * cos(radians(center_latitude))
@@ -98,8 +98,8 @@ def build_fut_minna_node_coordinates(
     coordinates: Dict[str, Dict[str, float]] = {}
 
     for node_id, angle_degrees in zip(
-        ("NODE_04", "NODE_05", "NODE_06"),
-        (30, 150, 270),
+        SIMULATED_NODE_IDS,
+        (330, 30, 150, 270),
     ):
         angle = radians(angle_degrees)
         coordinates[node_id] = {
@@ -240,7 +240,7 @@ def run_simulator() -> None:
     print("🌱 Starting capstone hardware simulation... Press Ctrl+C to stop.")
     print(
         f"⬡ Simulating {', '.join(SIMULATED_NODE_IDS)}. "
-        f"NODE_04-NODE_06 use FUT Minna Gidan Kwano GPS positions around "
+        f"NODE_03-NODE_06 use FUT Minna Gidan Kwano GPS positions around "
         f"({FUT_MINNA_CENTER_LATITUDE:.5f}, {FUT_MINNA_CENTER_LONGITUDE:.5f})."
     )
 

@@ -90,12 +90,30 @@ async def classify_suitability(request: ClassifySuitabilityRequest):
     crop = window["crop"]
     latest = window["latest"]
 
+    predicted_crop = None
+    crop_confidence = None
+    crop_probabilities = None
+    try:
+        from backend.ml import lstm_crop_inference
+
+        crop_prediction = lstm_crop_inference.predict_ideal_crop_from_rows(window["rows"])
+        if crop_prediction:
+            predicted_crop = crop_prediction["crop"]
+            crop_confidence = crop_prediction["confidence"]
+            crop_probabilities = crop_prediction["class_probabilities"]
+    except Exception as exc:
+        logger.warning("Crop recommendation failed for %s: %s", node_id, exc)
+
     # Direct, always-available threshold verdict on the latest reading.
     threshold_label, threshold_score, per_param = soil_health.score_reading(latest, crop)
 
     response: dict = {
         "node_id": node_id,
         "crop": crop,
+        "predicted_crop": predicted_crop,
+        "crop_confidence": crop_confidence,
+        "crop_probabilities": crop_probabilities,
+        "crop_model_available": predicted_crop is not None,
         "crop_profile": soil_health.normalize_crop(crop),
         "readings_used": window["count"],
         "threshold_label": threshold_label,

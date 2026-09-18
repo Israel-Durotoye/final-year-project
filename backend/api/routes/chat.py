@@ -244,6 +244,14 @@ class ChatRequest(BaseModel):
         le=20,
         description="Number of candidate chunks to retrieve before reranking.",
     )
+    response_mode: Literal["chat", "widget", "field_report", "field_summary"] = "chat"
+
+    @field_validator("node_id")
+    @classmethod
+    def node_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("node_id must not be blank.")
+        return value.strip().upper() if value else None
 
     @field_validator("query")
     @classmethod
@@ -373,6 +381,8 @@ async def post_chat(request: ChatRequest) -> ChatResponse:
     # over 503 when the request body is malformed.
     engine = _require_engine()
     query = request.query   # already stripped by the Pydantic validator
+    if request.response_mode in {"field_report", "field_summary"} and not request.node_id:
+        raise HTTPException(status_code=400, detail="A field report requires a selected node.")
 
     logger.info("POST /chat | Query: '%s...' | top_k: %d", query[:60], request.top_k)
 
@@ -410,6 +420,7 @@ async def post_chat(request: ChatRequest) -> ChatResponse:
             retrieved_chunks=chunks,
             conversation_history=conversation_history,
             node_id=request.node_id.strip() if request.node_id else None,
+            response_mode=request.response_mode,
         )
     except EnvironmentError as exc:
         # Missing provider keys — configuration problem, not a client error

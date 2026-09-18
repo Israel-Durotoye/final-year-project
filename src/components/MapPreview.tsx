@@ -18,6 +18,9 @@ interface Props {
   onSelect?: (id: string) => void;
   interactive?: boolean;
   children?: React.ReactNode;
+  nodeLabels?: Record<string, string>;
+  nodeColors?: Record<string, string>;
+  showNetworkBoundary?: boolean;
 }
 
 // Center map helper component
@@ -73,7 +76,7 @@ const ZoomResetControl = ({ coordinates }: { coordinates: [number, number][] }) 
   );
 };
 
-export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, interactive = true, children }: Props) => {
+export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, interactive = true, children, nodeLabels, nodeColors, showNetworkBoundary = true }: Props) => {
   // Normalize nodes (handles Supabase schema)
   const normalizedNodes = useMemo(() => {
     return nodes.map((n) => {
@@ -101,7 +104,7 @@ export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, inter
   );
 
   // Custom marker icon using HTML
-  const createMarkerIcon = (isSelected: boolean, isOnline: boolean) => {
+  const createMarkerIcon = (isSelected: boolean, isOnline: boolean, color?: string) => {
     const bgColor = isOnline ? "var(--primary)" : "var(--muted)";
     const textColor = isOnline ? "var(--primary-foreground)" : "var(--muted-foreground)";
     const ring = isSelected ? `box-shadow: 0 0 0 4px hsl(var(--primary) / 0.3); transform: scale(1.15);` : "";
@@ -112,7 +115,7 @@ export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, inter
         <div style="
           width: 28px; 
           height: 28px; 
-          background-color: hsl(${bgColor}); 
+          background-color: ${color ?? `hsl(${bgColor})`};
           border-radius: 8px;
           display: flex;
           align-items: center;
@@ -152,7 +155,7 @@ export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, inter
         />
 
         {/* Dotted lines connecting nodes */}
-        {perimeterCoordinates.length > 2 && (
+        {showNetworkBoundary && perimeterCoordinates.length > 2 && (
           <Polygon
             positions={perimeterCoordinates}
             pathOptions={{
@@ -174,14 +177,16 @@ export const MapPreview = ({ nodes, height = "h-80", selectedId, onSelect, inter
           <Marker 
             key={n.id} 
             position={[n.lat, n.lng]}
-            icon={createMarkerIcon(selectedId === n.id, n.isOnline)}
+            title={`Select ${n.id}`}
+            icon={createMarkerIcon(selectedId === n.id, n.isOnline, nodeColors?.[n.id])}
             eventHandlers={{
               click: () => onSelect?.(n.id)
             }}
           >
             {interactive && (
-              <Tooltip direction="top" offset={[0, -10]} opacity={1} permanent={false} interactive={false}>
+              <Tooltip direction="top" offset={[0, -10]} opacity={1} permanent={Boolean(nodeLabels)} interactive={false}>
                 <span className="font-bold font-display text-xs uppercase tracking-wider text-black">{n.id}</span>
+                {nodeLabels?.[n.id] && <span className="block text-xs text-black">{nodeLabels[n.id]}</span>}
               </Tooltip>
             )}
           </Marker>

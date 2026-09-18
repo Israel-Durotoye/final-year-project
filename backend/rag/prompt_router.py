@@ -96,7 +96,9 @@ class PromptRouter:
         - telemetry exists: live sensor telemetry structure is present or mentioned.
         - sensor values exist: specific numeric values are in query or telemetry.
         - symptoms are reported: keywords indicating yellowing, spots, pests.
-        - soil measurements are provided: explicit readings (pH, moisture, NPK).
+                - soil measurements are provided: explicit readings from the available
+                    sensors (moisture, NPK, temperature, or humidity). pH is not a live
+                    sensor measurement and should not be requested.
         """
         q_lower = query.lower()
         c_lower = context.lower()
@@ -110,7 +112,7 @@ class PromptRouter:
 
         # 2. Sensor values exist
         sensor_values_exist = (
-            (telemetry is not None and any(k in telemetry for k in ["ph", "nitrogen", "moisture", "temperature"])) or
+            (telemetry is not None and any(k in telemetry for k in ["nitrogen", "moisture", "temperature", "humidity"])) or
             any(k in combined for k in ["ph:", "nitrogen:", "phosphorus:", "potassium:", "moisture:", "temp:"])
         )
 
@@ -124,7 +126,6 @@ class PromptRouter:
 
         # 4. Soil measurements are provided
         measurement_patterns = [
-            r"ph\s*(?:of|is|:)?\s*[\d.]+",
             r"nitrogen\s*(?:of|is|:)?\s*[\d.]+",
             r"phosphorus\s*(?:of|is|:)?\s*[\d.]+",
             r"potassium\s*(?:of|is|:)?\s*[\d.]+",
@@ -332,11 +333,12 @@ INTERNALIZE KNOWLEDGE
                 "and crop rotation history from context."
             ),
             intent_classifier.Intent.SOIL_DIAGNOSIS: (
-                "Assess soil health. Look for texture, pH levels, compaction signs, or aeration issues mentioned in context."
+                "Assess soil health using the available sensor readings and any explicitly supplied soil-test results. "
+                "Do not ask for pH because the farm sensors do not measure it."
             ),
             intent_classifier.Intent.SENSOR_ANALYSIS: (
-                "Analyze soil sensor telemetry readings. Explain the meaning of pH, moisture %, NPK ppm, "
-                "or EC/salinity numbers."
+                "Analyze the available soil sensor telemetry: moisture %, NPK, temperature, and humidity. "
+                "Do not ask for pH because the farm sensors do not measure it."
             ),
             intent_classifier.Intent.FERTILIZER_RECOMMENDATION: (
                 "Provide fertilizer recommendations. Focus on nutrient application, organic compost/manure options, "

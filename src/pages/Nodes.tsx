@@ -1,6 +1,6 @@
 import { PageHeader } from "@/components/layout/PageHeader";
 import { getNigerianSeason } from "@/lib/season";
-import { Server, AlertTriangle, TrendingUp, Radio, Leaf, FlaskConical, Sprout, Droplets, Waves, Thermometer, Stethoscope, FlaskRound, LucideIcon } from "lucide-react";
+import { Server, AlertTriangle, Radio, Leaf, FlaskConical, Sprout, Droplets, Thermometer, Stethoscope, RefreshCw, LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
@@ -12,16 +12,18 @@ import {
   isNodeActive,
 } from "@/lib/nodeActivity";
 import { fetchTelemetry, latestTelemetryByNode } from "@/lib/telemetry";
+import { fetchCropRecommendations, formatCropRecommendation, CropRecommendation } from "@/lib/cropRecommendation";
 
 type Tone = "good" | "fair" | "poor";
 
 // Score thresholds for each metric (min-good, min-fair)
-const ranges: Record<string, { good: [number, number]; fair: [number, number]; unit: string }> = {
-  Nitrogen_mg_k:   { good: [25, 50],   fair: [15, 60],   unit: "mg/kg" },
-  Phosphorus_m: { good: [40, 65],   fair: [30, 75],   unit: "mg/kg" },
-  Potassium_mg_:  { good: [180, 230], fair: [150, 260],  unit: "mg/kg" },
-  "Moisture_%":  { good: [35, 55],   fair: [25, 65],   unit: "%" },
-  Temperature_C: { good: [22, 26], fair: [18, 30], unit: "°C" },
+const ranges: Record<string, { good: [number, number]; fair: [number, number]; max: number; unit: string }> = {
+  Nitrogen_mg_k: { good: [25, 50], fair: [15, 60], max: 1999, unit: "mg/kg" },
+  Phosphorus_m: { good: [40, 65], fair: [30, 75], max: 1999, unit: "mg/kg" },
+  Potassium_mg_: { good: [180, 230], fair: [150, 260], max: 1999, unit: "mg/kg" },
+  "Moisture_%": { good: [35, 55], fair: [25, 65], max: 100, unit: "%" },
+  "Humidity_%": { good: [35, 70], fair: [20, 85], max: 100, unit: "%" },
+  Temperature_C: { good: [22, 26], fair: [18, 30], max: 100, unit: "°C" },
 };
 
 const scoreMetric = (key: string, v: number): Tone => {
@@ -37,10 +39,10 @@ const toneClasses: Record<Tone, { bar: string; text: string; badgeBg: string; ba
   poor: { bar: "bg-destructive", text: "text-destructive", badgeBg: "bg-destructive/15", badgeText: "text-destructive", label: "POOR" },
 };
 
-// Compute fill % within the fair envelope
+// Meters show the complete sensor scale, independent of the agronomic status band.
 const fillPct = (key: string, v: number) => {
-  const [lo, hi] = ranges[key].fair;
-  return Math.max(8, Math.min(100, ((v - lo) / (hi - lo)) * 100));
+  const max = ranges[key]?.max ?? 100;
+  return Math.max(0, Math.min(100, (v / max) * 100));
 };
 
 const StatCard = ({ icon: Icon, label, value, tone = "default" }: { icon: LucideIcon; label: string; value: string | number; tone?: "default" | "warning" | "primary" }) => {
@@ -87,6 +89,10 @@ const MetricCell = ({ icon: Icon, label, value, mKey, val }: { icon: LucideIcon;
       <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
         <div className={cn("h-full rounded-full transition-all", t.bar)} style={{ width: `${fillPct(mKey, val)}%` }} />
       </div>
+      <div className="flex justify-between text-[10px] text-muted-foreground font-mono">
+        <span>0</span>
+        <span>{ranges[mKey]?.max ?? 100}{ranges[mKey]?.unit}</span>
+      </div>
     </div>
   );
 };
@@ -99,6 +105,8 @@ const Nodes = () => {
   const [activeNodeCount, setActiveNodeCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [cropRecommendations, setCropRecommendations] = useState<Record<string, CropRecommendation>>({});
+  const [predictingNode, setPredictingNode] = useState<string | null>(null);
 
   // Helper to determine status
   const calculateNodeStatus = (node: any): string => {
@@ -164,13 +172,26 @@ const Nodes = () => {
 
   const totalNodes = latestNodes.length;
   const attention = latestNodes.filter((n) => calculateNodeStatus(n) !== "GOOD").length;
-  const yieldForecast = "--"; // placeholder
+
+  const predictCrop = async (nodeId: string) => {
+    if (predictingNode) return;
+    setPredictingNode(nodeId);
+    const recommendations = await fetchCropRecommendations([nodeId]);
+    setCropRecommendations((current) => ({ ...current, [nodeId]: recommendations[nodeId] }));
+    setPredictingNode(null);
+  };
 
   return (
     <>
       <PageHeader title="Nodes" subtitle={`${totalNodes} sensors on your farm`} />
 
       <div className="p-6 space-y-6">
+        {error && (
+          <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            Unable to refresh sensor readings: {error}
+          </div>
+        )}
+
         {/* Top stats */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <StatCard
@@ -179,10 +200,19 @@ const Nodes = () => {
             value={activeNodeCount ?? "-"}
           />
           <StatCard icon={AlertTriangle} label="Needs Attention" value={attention} tone="warning" />
-          <StatCard icon={TrendingUp} label="Avg Farm Yield Forecast" value={`${yieldForecast}%`} tone="primary" />
+          <StatCard icon={Server} label="Total Nodes" value={totalNodes} tone="primary" />
         </div>
 
         {/* Node grid */}
+        {loading && latestNodes.length === 0 ? (
+          <div role="status" className="rounded-xl border border-border bg-card p-10 text-center text-sm text-muted-foreground">
+            Loading sensor nodes...
+          </div>
+        ) : latestNodes.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-border bg-card p-10 text-center text-sm text-muted-foreground">
+            No sensor nodes are reporting yet.
+          </div>
+        ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
           {latestNodes.map((n) => {
             const status = calculateNodeStatus(n);
@@ -203,7 +233,20 @@ const Nodes = () => {
                     <div>
                       <h3 className="font-bold tracking-tight text-base">{n.Node_ID}</h3>
                       <p className="text-xs text-muted-foreground">
-                        {n.Target_Crop ?? "-"} · {getNigerianSeason(n.Timestamp)} · {n.Data_Source === "hardware" ? "Hardware" : "Simulator"}
+                        <span className="inline-flex items-center gap-1">
+                          Recorded: {n.Target_Crop ?? "none"} · Best crop: {formatCropRecommendation(cropRecommendations[n.Node_ID])}
+                          <button
+                            type="button"
+                            onClick={() => void predictCrop(n.Node_ID)}
+                            disabled={predictingNode !== null}
+                            aria-label={`Predict best crop for ${n.Node_ID}`}
+                            title="Predict best crop"
+                            className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-primary/10 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <RefreshCw className={cn("h-3 w-3", predictingNode === n.Node_ID && "animate-spin")} />
+                          </button>
+                        </span>
+                        <span> · {getNigerianSeason(n.Timestamp)} · {n.Data_Source === "hardware" ? "Hardware" : "Simulator"}</span>
                       </p>
                     </div>
                   </div>
@@ -213,11 +256,12 @@ const Nodes = () => {
                 </div>
 
                 {/* Metrics list */}
-                <div className="flex flex-col gap-y-5 mb-6">
+                <div className="flex flex-col gap-y-4 mb-6">
                   <MetricCell icon={Leaf}         label="Nitrogen"       value={n.Nitrogen_mg_k       ?? "-"} mKey="Nitrogen_mg_k"       val={Number(n.Nitrogen_mg_k       ?? 0)} />
                   <MetricCell icon={FlaskConical}  label="Phosphorus"     value={n.Phosphorus_m     ?? "-"} mKey="Phosphorus_m"     val={Number(n.Phosphorus_m     ?? 0)} />
                   <MetricCell icon={Sprout}        label="Potassium"      value={n.Potassium_mg_      ?? "-"} mKey="Potassium_mg_"      val={Number(n.Potassium_mg_      ?? 0)} />
                   <MetricCell icon={Droplets}      label="Moisture"       value={n["Moisture_%"]      ?? "-"} mKey="Moisture_%"      val={Number(n["Moisture_%"]      ?? 0)} />
+                  <MetricCell icon={Droplets}      label="Humidity"       value={n["Humidity_%"]       ?? "-"} mKey="Humidity_%"       val={Number(n["Humidity_%"]       ?? 0)} />
                   <MetricCell icon={Thermometer}   label="Temp"           value={n.Temperature_C ?? "-"} mKey="Temperature_C" val={Number(n.Temperature_C ?? 0)} />
                 </div>
 
@@ -236,6 +280,7 @@ const Nodes = () => {
             );
           })}
         </div>
+        )}
       </div>
     </>
   );

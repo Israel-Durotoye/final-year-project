@@ -50,10 +50,10 @@ class SensorSimulatorTests(unittest.TestCase):
             self.assertEqual(row["Latitude"], node["lat"])
             self.assertEqual(row["Longitude"], node["lng"])
 
-    def test_nodes_four_to_six_are_inside_fut_minna(self) -> None:
+    def test_simulator_nodes_are_inside_fut_minna(self) -> None:
         coordinates = sensor_simulator.build_fut_minna_node_coordinates()
 
-        self.assertEqual(set(coordinates), {"NODE_04", "NODE_05", "NODE_06"})
+        self.assertEqual(set(coordinates), set(sensor_simulator.SIMULATED_NODE_IDS))
         for node_id, coordinate in coordinates.items():
             self.assertGreaterEqual(
                 coordinate["lat"], sensor_simulator.FUT_MINNA_LATITUDE_BOUNDS[0]

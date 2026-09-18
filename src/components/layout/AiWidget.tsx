@@ -1,14 +1,17 @@
 import { useState, useEffect } from "react";
-import { Sparkles, X, Send, Bot } from "lucide-react";
+import { Sparkles, X, Send, Bot, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { AssistantMarkdown } from "@/components/chat/AssistantMarkdown";
+
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
+const WIDGET_INSTRUCTION = "Keep this reply brief and conversational: answer in 1-3 short sentences, ask one clear follow-up only when needed, and offer one practical suggestion when useful. Use light, clean humor sparingly. You are the quick farm helper, not a full report.";
 
 export const AiWidget = () => {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<{ role: "user" | "ai"; text: string }[]>([
-    { role: "ai", text: "Hi! I'm your Soil Doctor AI. Ask me anything about your fields." },
+    { role: "ai", text: "Hi! I can help with a quick farm question. What are you noticing?" },
   ]);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -19,7 +22,7 @@ export const AiWidget = () => {
       const nodeId = ev?.detail?.nodeId;
       if (!nodeId) return;
       setOpen(true);
-      const prompt = `Diagnose ${nodeId}: please analyze latest sensor telemetry and recommend interventions.`;
+      const prompt = `${WIDGET_INSTRUCTION} Give a quick check of ${nodeId}'s latest sensor telemetry and one practical next step.`;
       setMessages((m) => [...m, { role: "user", text: prompt }]);
       callChat(prompt);
     };
@@ -27,13 +30,20 @@ export const AiWidget = () => {
     window.addEventListener("ai:diagnose", handler as EventListener);
     return () => window.removeEventListener("ai:diagnose", handler as EventListener);
   }, []);
-    async function callChat(query: string) {
+    async function callChat(query: string, history = messages) {
       try {
         setIsLoading(true);
-        const res = await fetch("http://localhost:8000/api/v1/chat", {
+        const res = await fetch(`${API_BASE}/chat/`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query }),
+          body: JSON.stringify({
+            query: `${WIDGET_INSTRUCTION}\n\nUser question: ${query}`,
+            response_mode: "widget",
+            history: history.slice(-6).map((message) => ({
+              role: message.role === "ai" ? "assistant" : "user",
+              content: message.text,
+            })),
+          }),
         });
         if (!res.ok) {
           const txt = await res.text();
@@ -52,11 +62,12 @@ export const AiWidget = () => {
     }
 
     const send = () => {
-      if (!input.trim()) return;
+      if (!input.trim() || isLoading) return;
       const q = input.trim();
-      setMessages((m) => [...m, { role: "user", text: q }]);
+      const nextMessages = [...messages, { role: "user" as const, text: q }];
+      setMessages(nextMessages);
       setInput("");
-      callChat(q);
+      callChat(q, nextMessages);
     };
 
   return (
@@ -79,8 +90,8 @@ export const AiWidget = () => {
               <Bot className="h-5 w-5" />
             </div>
             <div>
-              <p className="font-semibold text-sm">AI Soil Doctor</p>
-              <p className="text-xs opacity-90">Contextual farming assistant</p>
+              <p className="font-semibold text-sm">The Soil Nurse</p>
+              <p className="text-xs opacity-90">Quick farm check-in</p>
             </div>
           </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -98,7 +109,9 @@ export const AiWidget = () => {
             ))}
             {isLoading && (
               <div className={cn("flex justify-start")}> 
-                <div className={cn("max-w-[80%] px-3.5 py-2.5 rounded-2xl text-sm bg-secondary text-secondary-foreground rounded-bl-sm")}>Thinking...</div>
+                <div className={cn("max-w-[80%] px-3.5 py-2.5 rounded-2xl text-sm bg-secondary text-secondary-foreground rounded-bl-sm flex items-center gap-2")}>
+                  <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> Thinking...
+                </div>
               </div>
             )}
           </div>
@@ -107,7 +120,7 @@ export const AiWidget = () => {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && send()}
-              placeholder="Ask about your soil..."
+              placeholder="What should we check?"
               className="flex-1 px-3 py-2 text-sm bg-secondary/50 border border-border rounded-lg focus:outline-none focus:ring-2 focus:ring-ring"
             />
             <Button size="icon" onClick={send}><Send className="h-4 w-4" /></Button>

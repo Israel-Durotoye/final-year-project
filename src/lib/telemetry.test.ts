@@ -99,4 +99,14 @@ describe("mixed telemetry normalization", () => {
     expect(latestTelemetryByNode(rows).map((row) => row.Node_ID)).toEqual(["NODE_01", "NODE_03"]);
     expect(latestTelemetryByNode(rows)[1].Timestamp).toBe("2026-09-02T07:00:00Z");
   });
+
+  it("places simulator nodes in one area with distinct coordinates", () => {
+    const rows = ["NODE_03", "NODE_04", "NODE_05", "NODE_06"].map((Node_ID) => (
+      normalizeSimulatorTelemetry({ Node_ID, Timestamp: "2026-09-02T07:00:00Z" })
+    ));
+
+    expect(new Set(rows.map((row) => `${row.Latitude},${row.Longitude}`)).size).toBe(4);
+    expect(rows.every((row) => Number(row.Latitude) > 9.52 && Number(row.Latitude) < 9.54)).toBe(true);
+    expect(rows.every((row) => Number(row.Longitude) > 6.44 && Number(row.Longitude) < 6.46)).toBe(true);
+  });
 });
