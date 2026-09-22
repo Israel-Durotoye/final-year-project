@@ -70,10 +70,10 @@ class CropTrainingDataTests(unittest.TestCase):
     def test_supabase_loader_pages_until_every_simulator_row_is_read(self) -> None:
         client = _PagedSupabaseClient([
             [
-                {"Node_ID": "NODE_03", "Timestamp": "2026-09-01T00:00:00Z"},
                 {"Node_ID": "NODE_04", "Timestamp": "2026-09-01T00:01:00Z"},
+                {"Node_ID": "NODE_05", "Timestamp": "2026-09-01T00:02:00Z"},
             ],
-            [{"Node_ID": "NODE_05", "Timestamp": "2026-09-01T00:02:00Z"}],
+            [{"Node_ID": "NODE_06", "Timestamp": "2026-09-01T00:03:00Z"}],
         ])
 
         rows = crop_training_data.fetch_all_simulator_rows(client=client, page_size=2)
@@ -84,7 +84,7 @@ class CropTrainingDataTests(unittest.TestCase):
 
     def test_combined_loader_labels_and_identifies_both_sources(self) -> None:
         simulator = [{
-            "Node_ID": "NODE_03",
+            "Node_ID": "NODE_04",
             "Timestamp": "2026-09-02T09:28:00Z",
             "Target_Crop": "Outdated database label",
         }]
@@ -103,7 +103,7 @@ class CropTrainingDataTests(unittest.TestCase):
         ):
             rows = crop_training_data.fetch_all_crop_training_rows()
 
-        self.assertEqual([row["Node_ID"] for row in rows], ["NODE_01", "NODE_03"])
+        self.assertEqual([row["Node_ID"] for row in rows], ["NODE_01", "NODE_04"])
         self.assertEqual(rows[0]["Target_Crop"], "Maize")
         self.assertEqual(rows[0]["Data_Source"], "hardware")
         self.assertEqual(rows[1]["Target_Crop"], "Cassava")

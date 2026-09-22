@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from backend.ml import firebase_hardware
+from backend.ml import firebase_hardware, supabase_hardware
 
 
 DEFAULT_NODE_CROP_MAP = {
@@ -19,6 +19,7 @@ DEFAULT_NODE_CROP_MAP = {
     "NODE_04": "Cassava",
     "NODE_05": "Rice",
     "NODE_06": "Rice",
+    "NODE_07": "Rice",
 }
 DEFAULT_CROP_MAP_PATH = Path(__file__).with_name("crop_node_labels.json")
 DEFAULT_HISTORICAL_DATA_PATH = Path(__file__).resolve().parents[2] / "pipeline_ready_sensor_data.csv"
@@ -52,7 +53,7 @@ def load_node_crop_map(path: str | os.PathLike[str] | None = None) -> dict[str, 
 
 
 NODE_CROP_MAP = load_node_crop_map()
-SIMULATOR_NODE_IDS = set(NODE_CROP_MAP) - set(firebase_hardware.PHYSICAL_NODE_IDS)
+SIMULATOR_NODE_IDS = set(NODE_CROP_MAP) - set(supabase_hardware.HARDWARE_NODE_IDS)
 
 
 def load_historical_crop_rows(
@@ -163,14 +164,18 @@ def fetch_all_crop_training_rows(
 ) -> list[dict[str, Any]]:
     """Merge all physical and simulated records into the application schema."""
     crop_map = node_crop_map or load_node_crop_map()
-    simulator_node_ids = set(crop_map) - set(firebase_hardware.PHYSICAL_NODE_IDS)
-    hardware_node_ids = set(crop_map) & set(firebase_hardware.PHYSICAL_NODE_IDS)
+    simulator_node_ids = set(crop_map) - set(supabase_hardware.HARDWARE_NODE_IDS)
+    hardware_node_ids = set(crop_map) & set(supabase_hardware.HARDWARE_NODE_IDS)
     simulator_rows = fetch_all_simulator_rows(
         client=supabase_client,
         page_size=page_size,
         node_ids=simulator_node_ids,
     )
-    hardware_rows = firebase_hardware.fetch_all_hardware_rows(page_size=page_size)
+    hardware_rows = (
+        supabase_hardware.fetch_all_hardware_rows(page_size=page_size)
+        if supabase_hardware.is_configured()
+        else firebase_hardware.fetch_all_hardware_rows(page_size=page_size)
+    )
 
     merged: list[dict[str, Any]] = []
     for source, source_rows, allowed_nodes in (

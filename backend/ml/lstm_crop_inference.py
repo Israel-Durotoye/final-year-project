@@ -14,8 +14,8 @@ from typing import Any, Optional
 import joblib
 import numpy as np
 import pandas as pd
-from supabase import create_client, Client
 import keras
+from backend.ml import node_data
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +48,15 @@ def load_artifacts():
     if not all(path.exists() for path in (MODEL_PATH, IMPUTER_PATH, SCALER_PATH, LABELS_PATH)):
         return False
         
-    if _model is None:
+    if any(artifact is None for artifact in (_model, _imputer, _scaler, _labels)):
         try:
             logger.info("Loading LSTM crop recommendation model...")
-            _model = keras.models.load_model(MODEL_PATH)
-            _imputer = joblib.load(IMPUTER_PATH)
-            _scaler = joblib.load(SCALER_PATH)
+            model = keras.models.load_model(MODEL_PATH, compile=False)
+            imputer = joblib.load(IMPUTER_PATH)
+            scaler = joblib.load(SCALER_PATH)
             with open(LABELS_PATH, "r") as f:
-                _labels = json.load(f)
+                labels = json.load(f)
+            _model, _imputer, _scaler, _labels = model, imputer, scaler, labels
         except Exception as e:
             logger.error(f"Failed to load LSTM artifacts: {e}")
             return False
@@ -69,18 +70,27 @@ def predict_ideal_crop_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any] |
 
     try:
         df = pd.DataFrame(rows[-SEQUENCE_LENGTH:])
-        feature_frame = df[FEATURES].apply(pd.to_numeric, errors="coerce")
+        feature_frame = df.reindex(columns=FEATURES).apply(pd.to_numeric, errors="coerce")
         for feature, (lower, upper) in FEATURE_BOUNDS.items():
             feature_frame.loc[~feature_frame[feature].between(lower, upper), feature] = np.nan
         npk_features = ["Nitrogen_mg_k", "Phosphorus_m", "Potassium_mg_"]
         feature_frame.loc[feature_frame[npk_features].eq(0).all(axis=1), npk_features] = np.nan
+        if not feature_frame.notna().any().any():
+            return None
         imputed_data = _imputer.transform(feature_frame)
         scaled_data = _scaler.transform(imputed_data)
         preds = _model.predict(np.expand_dims(scaled_data, axis=0), verbose=0)[0]
+        if not np.isfinite(preds).all() or len(preds) != len(_labels):
+            return None
         class_idx = int(np.argmax(preds))
         return {
             "crop": _labels.get(str(class_idx)),
             "confidence": float(preds[class_idx]),
+            "readings_used": len(feature_frame),
+            "window_start": rows[-SEQUENCE_LENGTH].get("Timestamp"),
+            "window_end": rows[-1].get("Timestamp"),
+            "imputed_values": int(feature_frame.isna().sum().sum()),
+            "total_values": int(feature_frame.size),
             "class_probabilities": {
                 _labels.get(str(index), str(index)): float(probability)
                 for index, probability in enumerate(preds)
@@ -97,34 +107,8 @@ def predict_ideal_crop(node_id: str) -> Optional[str]:
     and returns the predicted ideal crop string (e.g., "Maize").
     Returns None if the model is not trained or there's not enough data.
     """
-    if not load_artifacts():
-        logger.warning("LSTM artifacts not found. Please run the Jupyter Notebook first.")
+    window = node_data.fetch_node_window(node_id, limit=SEQUENCE_LENGTH)
+    if window["status"] != "ok":
         return None
-        
-    url = os.environ.get("SUPABASE_URL") or os.environ.get("VITE_SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY") or os.environ.get("VITE_SUPABASE_ANON_KEY")
-    if not url or not key:
-        logger.error("Supabase credentials missing.")
-        return None
-
-    client: Client = create_client(url, key)
-
-    try:
-        response = client.table("capstone_dataset")\
-            .select("*")\
-            .eq("Node_ID", node_id)\
-            .order("Timestamp", desc=True)\
-            .limit(SEQUENCE_LENGTH)\
-            .execute()
-        
-        data = getattr(response, "data", None) or (response.get("data") if isinstance(response, dict) else [])
-    except Exception as e:
-        logger.error(f"Failed to fetch data for node {node_id}: {e}")
-        return None
-
-    if len(data) < SEQUENCE_LENGTH:
-        logger.warning(f"Not enough data for {node_id}. Need {SEQUENCE_LENGTH}, got {len(data)}")
-        return None
-
-    prediction = predict_ideal_crop_from_rows(list(reversed(data)))
+    prediction = predict_ideal_crop_from_rows(window["rows"])
     return prediction.get("crop") if prediction else None

@@ -55,7 +55,7 @@ except ImportError:
     Client = None
     create_client = None
 
-from backend.ml import firebase_hardware
+from backend.ml import firebase_hardware, supabase_hardware
 from backend.rag import diagnostics, prescriptions
 from backend.rag.field_report import (
     FIELD_REPORT_INSTRUCTION, REPORT_SECTIONS, build_report_evidence, report_content,
@@ -1622,11 +1622,17 @@ def _get_farm_snapshot() -> dict[str, Any]:
                     "communication_ok": row.get("communication_ok"),
                 }
 
-        for hardware_node_id in sorted(firebase_hardware.PHYSICAL_NODE_IDS):
+        hardware_ids = supabase_hardware.HARDWARE_NODE_IDS
+        hardware_reader = (
+            supabase_hardware.fetch_hardware_rows
+            if supabase_hardware.is_configured()
+            else firebase_hardware.fetch_hardware_rows
+        )
+        for hardware_node_id in sorted(hardware_ids):
             try:
-                hardware_rows = firebase_hardware.fetch_hardware_rows(
+                hardware_rows = hardware_reader(
                     hardware_node_id,
-                    limit=1,
+                    limit=24,
                 )
             except Exception as exc:
                 logger.warning(
@@ -1651,6 +1657,23 @@ def _get_farm_snapshot() -> dict[str, Any]:
                 "humidity_pct": row.get("Humidity_%"),
                 "communication_ok": True,
             }
+            try:
+                from backend.ml.lstm_crop_inference import predict_ideal_crop_from_rows
+
+                crop_prediction = predict_ideal_crop_from_rows(hardware_rows)
+                if crop_prediction:
+                    latest_by_node[hardware_node_id].update({
+                        "ai_predicted_ideal_crop": crop_prediction["crop"],
+                        "crop_recommendation": crop_prediction,
+                        "crop_recommendation_basis": (
+                            "Model recommendation from the latest 24 accumulated readings; "
+                            "not a recorded planting or a guarantee of yield. Model scores "
+                            "are not calibrated probabilities of planting success. Check "
+                            "imputed_values and window_end before presenting the recommendation."
+                        ),
+                    })
+            except Exception as exc:
+                logger.warning("Hardware crop prediction unavailable for %s: %s", hardware_node_id, exc)
 
         return {
             "status": "online",
@@ -1670,6 +1693,35 @@ def _get_live_sensor_data(node_id: str) -> dict[str, Any]:
     """Fetch the latest sensor reading for a node."""
 
     cleaned_node = str(node_id).strip().upper()
+    if cleaned_node in supabase_hardware.HARDWARE_NODE_IDS and supabase_hardware.is_configured():
+        try:
+            rows = supabase_hardware.fetch_hardware_rows(cleaned_node, limit=1)
+        except Exception as exc:
+            logger.warning("Live hardware Supabase query failed for %s: %s", cleaned_node, exc)
+            return {"status": "offline", "reason": "Unable to retrieve physical sensor data."}
+        if not rows:
+            return {"status": "offline", "reason": f"No sensor data found for {cleaned_node}."}
+        row = rows[-1]
+        return {
+            "status": "online",
+            "node_id": row.get("Node_ID"),
+            "timestamp_utc": row.get("Timestamp"),
+            "nitrogen": row.get("Nitrogen_mg_k"),
+            "phosphorus": row.get("Phosphorus_m"),
+            "potassium": row.get("Potassium_mg_"),
+            "moisture": row.get("Moisture_%"),
+            "temperature": row.get("Temperature_C"),
+            "humidity": row.get("Humidity_%"),
+            "latitude": row.get("Latitude"),
+            "longitude": row.get("Longitude"),
+        }
+
+    if cleaned_node == "NODE_03":
+        return {
+            "status": "offline",
+            "reason": "Hardware Supabase credentials are not configured.",
+        }
+
     if firebase_hardware.is_physical_node(cleaned_node):
         try:
             rows = firebase_hardware.fetch_hardware_rows(cleaned_node, limit=1)

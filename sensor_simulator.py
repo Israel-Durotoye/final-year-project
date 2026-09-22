@@ -22,7 +22,7 @@ HEXAGON_CENTER_LONGITUDE = float(os.environ.get("SIMULATOR_CENTER_LONGITUDE", "4
 HEXAGON_RADIUS_METERS = float(os.environ.get("SIMULATOR_HEX_RADIUS_METERS", "140"))
 
 # FUT Minna's Gidan Kwano main campus lies within approximately
-# 9.5281-9.5369 N and 6.4386-6.4664 E. NODE_04-NODE_06 are placed in a
+# 9.5281-9.5369 N and 6.4386-6.4664 E. NODE_04-NODE_07 are placed in a
 # compact triangle near the centre of those published campus bounds.
 FUT_MINNA_CENTER_LATITUDE = float(
     os.environ.get("FUT_MINNA_CENTER_LATITUDE", "9.53250")
@@ -52,8 +52,8 @@ CROP_PROFILES = {
     }
 }
 
-NODE_CROPS = ("Maize", "Maize", "Cassava", "Cassava", "Rice", "Rice")
-SIMULATED_NODE_IDS = ("NODE_03", "NODE_04", "NODE_05", "NODE_06")
+NODE_CROPS = ("Maize", "Maize", "Cassava", "Cassava", "Rice", "Rice", "Rice")
+SIMULATED_NODE_IDS = ("NODE_04", "NODE_05", "NODE_06", "NODE_07")
 
 
 def build_hexagon_nodes(
@@ -240,7 +240,7 @@ def run_simulator() -> None:
     print("🌱 Starting capstone hardware simulation... Press Ctrl+C to stop.")
     print(
         f"⬡ Simulating {', '.join(SIMULATED_NODE_IDS)}. "
-        f"NODE_03-NODE_06 use FUT Minna Gidan Kwano GPS positions around "
+        f"NODE_04-NODE_07 use FUT Minna Gidan Kwano GPS positions around "
         f"({FUT_MINNA_CENTER_LATITUDE:.5f}, {FUT_MINNA_CENTER_LONGITUDE:.5f})."
     )
 

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { getMapCoordinate } from "@/lib/mapSpatial";
 
 vi.mock("@/lib/supabase", () => ({
   supabase: {},
@@ -13,6 +14,29 @@ import {
 } from "@/lib/telemetry";
 
 describe("mixed telemetry normalization", () => {
+  it.each(["NODE_01", "NODE_02"])("passes %s coordinates to the map without replacing real or fallback locations", (node_id) => {
+    for (const point of [
+      { latitude: "9.531982", longitude: "6.451488", gps_source: "real" },
+      { latitude: "9.056700", longitude: "7.496900", gps_source: "fallback" },
+      { latitude: "8.123456", longitude: "4.654321", gps_source: "real" },
+    ]) {
+      const row = normalizeHardwareTelemetry({ node_id, ...point }, "-P0WR_Zl8PkYTF9bskHK");
+      expect(getMapCoordinate(row)).toEqual([Number(point.latitude), Number(point.longitude)]);
+      expect(row.GPS_Source).toBe(point.gps_source);
+    }
+  });
+
+  it("does not turn missing GPS fields into a location at zero", () => {
+    for (const invalid of [null, undefined, "", " ", false, [], "invalid", Infinity]) {
+      const row = normalizeHardwareTelemetry({ node_id: "NODE_01", latitude: invalid, longitude: invalid }, "-P0WR_Zl8PkYTF9bskHK");
+      expect(row.Latitude).toBeNull();
+      expect(row.Longitude).toBeNull();
+      expect(getMapCoordinate(row)).toBeNull();
+    }
+    const zero = normalizeHardwareTelemetry({ node_id: "NODE_01", latitude: "0", longitude: "0" }, "-P0WR_Zl8PkYTF9bskHK");
+    expect(getMapCoordinate(zero)).toEqual([0, 0]);
+  });
+
   it("loads the INO Firebase log for a physical node", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
       ok: true,
@@ -91,17 +115,17 @@ describe("mixed telemetry normalization", () => {
 
   it("keeps only the newest normalized row for each node", () => {
     const rows = [
-      normalizeSimulatorTelemetry({ Node_ID: "NODE_03", Timestamp: "2026-09-02T07:00:00Z" }),
+      normalizeSimulatorTelemetry({ Node_ID: "NODE_04", Timestamp: "2026-09-02T07:00:00Z" }),
       normalizeHardwareTelemetry({ node_id: "NODE_01" }, "-P0WR_Zl8PkYTF9bskHK"),
-      normalizeSimulatorTelemetry({ Node_ID: "NODE_03", Timestamp: "2026-09-02T06:00:00Z" }),
+      normalizeSimulatorTelemetry({ Node_ID: "NODE_04", Timestamp: "2026-09-02T06:00:00Z" }),
     ];
 
-    expect(latestTelemetryByNode(rows).map((row) => row.Node_ID)).toEqual(["NODE_01", "NODE_03"]);
+    expect(latestTelemetryByNode(rows).map((row) => row.Node_ID)).toEqual(["NODE_01", "NODE_04"]);
     expect(latestTelemetryByNode(rows)[1].Timestamp).toBe("2026-09-02T07:00:00Z");
   });
 
   it("places simulator nodes in one area with distinct coordinates", () => {
-    const rows = ["NODE_03", "NODE_04", "NODE_05", "NODE_06"].map((Node_ID) => (
+    const rows = ["NODE_04", "NODE_05", "NODE_06", "NODE_07"].map((Node_ID) => (
       normalizeSimulatorTelemetry({ Node_ID, Timestamp: "2026-09-02T07:00:00Z" })
     ));
 

@@ -15,7 +15,15 @@ const { fetchRows, rows } = vi.hoisted(() => {
 });
 
 vi.mock("@/components/layout/PageHeader", () => ({ PageHeader: () => <h1>Map View</h1> }));
-vi.mock("@/lib/telemetry", () => ({ fetchTelemetry: fetchRows, latestTelemetryByNode: (items: unknown[]) => items }));
+vi.mock("@/lib/telemetry", () => ({
+  HARDWARE_NODE_IDS: ["NODE_01", "NODE_02"],
+  SIMULATOR_NODE_IDS: ["NODE_03", "NODE_04", "NODE_05", "NODE_06"],
+  fetchTelemetry: fetchRows, latestTelemetryByNode: (items: unknown[]) => items,
+}));
+vi.mock("@/lib/cropRecommendation", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/cropRecommendation")>(),
+  fetchCropRecommendations: vi.fn(async () => ({})),
+}));
 vi.mock("react-leaflet", () => ({ Circle: () => <span data-testid="overlay-circle" /> }));
 vi.mock("@/components/MapPreview", () => ({
   MapPreview: ({ nodes, onSelect, nodeLabels, children }: {

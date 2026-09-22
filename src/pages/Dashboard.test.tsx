@@ -16,6 +16,10 @@ vi.mock("@/components/layout/PageHeader", () => ({ PageHeader: () => <div>Dashbo
 vi.mock("@/components/MetricCard", () => ({ MetricCard: ({ label }: { label: string }) => <div>{label}</div> }));
 vi.mock("@/components/MapPreview", () => ({ MapPreview: () => <div>Map</div> }));
 vi.mock("@/components/TrendCharts", () => ({ TrendCharts: () => <div>Trends</div> }));
+vi.mock("@/lib/cropRecommendation", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/cropRecommendation")>(),
+  fetchCropRecommendations: vi.fn(async () => ({})),
+}));
 vi.mock("@/lib/telemetry", () => ({
   fetchTelemetry: vi.fn(async () => [telemetryRow, { ...telemetryRow, Node_ID: "NODE_02" }]),
   latestTelemetryByNode: vi.fn(() => [telemetryRow, { ...telemetryRow, Node_ID: "NODE_02" }]),

@@ -18,7 +18,7 @@ class SensorSimulatorTests(unittest.TestCase):
             radius_meters=140,
         )
 
-        self.assertEqual(list(nodes), [f"NODE_{index:02d}" for index in range(1, 7)])
+        self.assertEqual(list(nodes), [f"NODE_{index:02d}" for index in range(1, 8)])
         distances = []
         for node in nodes.values():
             north_meters = (node["lat"] - 8.48225) * 111_320

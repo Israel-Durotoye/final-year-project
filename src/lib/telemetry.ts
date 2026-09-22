@@ -1,25 +1,32 @@
+import { createClient } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
-export const HARDWARE_NODE_IDS = ["NODE_01", "NODE_02"] as const;
-export const SIMULATOR_NODE_IDS = ["NODE_03", "NODE_04", "NODE_05", "NODE_06"] as const;
+export const HARDWARE_NODE_IDS = ["NODE_01", "NODE_02", "NODE_03"] as const;
+export const SIMULATOR_NODE_IDS = ["NODE_04", "NODE_05", "NODE_06", "NODE_07"] as const;
 
 // Keep simulator nodes in one farm footprint while retaining distinct field positions.
 const SIMULATOR_COORDINATES: Record<string, { Latitude: number; Longitude: number }> = {
-  NODE_03: { Latitude: 9.53141, Longitude: 6.45359 },
-  NODE_04: { Latitude: 9.53286, Longitude: 6.45359 },
-  NODE_05: { Latitude: 9.53309, Longitude: 6.45141 },
-  NODE_06: { Latitude: 9.53137, Longitude: 6.45141 },
+  NODE_04: { Latitude: 9.53141, Longitude: 6.45359 },
+  NODE_05: { Latitude: 9.53286, Longitude: 6.45359 },
+  NODE_06: { Latitude: 9.53309, Longitude: 6.45141 },
+  NODE_07: { Latitude: 9.53137, Longitude: 6.45141 },
 };
 
 const hardwareNodeIds = new Set<string>(HARDWARE_NODE_IDS);
+const legacyFirebaseNodeIds = new Set<string>(["NODE_01", "NODE_02"]);
 const simulatorNodeIds = new Set<string>(SIMULATOR_NODE_IDS);
 const FIREBASE_PUSH_ALPHABET = "-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
 const FIREBASE_LOG_LIMIT = 1000;
 const HARDWARE_FIREBASE_URL = (
   import.meta.env.VITE_HARDWARE_FIREBASE_URL
-  || (process.env.VITE_HARDWARE_FIREBASE_URL as string)
   || "https://capstone-2e26e-default-rtdb.firebaseio.com"
 ).replace(/\/$/, "");
+const HARDWARE_SUPABASE_URL = import.meta.env.VITE_HARDWARE_SUPABASE_URL
+  || "";
+const HARDWARE_SUPABASE_KEY = import.meta.env.VITE_HARDWARE_SUPABASE_ANON_KEY
+  || "";
+const HARDWARE_SUPABASE_TABLE = import.meta.env.VITE_HARDWARE_SUPABASE_TABLE
+  || "capstone_dataset";
 
 export type TelemetrySource = "hardware" | "simulator";
 
@@ -38,6 +45,12 @@ export type TelemetryQueryOptions = {
 };
 
 const normalizeNodeId = (value: unknown) => String(value ?? "").trim().toUpperCase();
+
+const hardwareNumber = (value: unknown): number | null => {
+  if ((typeof value !== "string" && typeof value !== "number") || String(value).trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
 
 const timestampValue = (row: Pick<TelemetryRow, "Timestamp">) => {
   const value = Date.parse(row.Timestamp);
@@ -81,9 +94,9 @@ export const normalizeHardwareTelemetry = (
   Temperature_C: row.temp,
   "Humidity_%": row.humidity,
   Soil_pH: row.ph,
-  Latitude: Number(row.latitude),
-  Longitude: Number(row.longitude),
-  Altitude_m: Number(row.altitude),
+  Latitude: hardwareNumber(row.latitude),
+  Longitude: hardwareNumber(row.longitude),
+  Altitude_m: hardwareNumber(row.altitude),
   Satellites: row.satellites,
   Season: row.season,
   GPS_Source: row.gps_source,
@@ -113,7 +126,7 @@ const fetchSimulatorTelemetry = async (options: TelemetryQueryOptions) => {
 
 const fetchHardwareTelemetry = async (options: TelemetryQueryOptions) => {
   const requestedNode = normalizeNodeId(options.nodeId);
-  if (requestedNode && !hardwareNodeIds.has(requestedNode)) return [];
+  if (requestedNode && !legacyFirebaseNodeIds.has(requestedNode)) return [];
 
   // Firebase filters this shared log before the browser can separate node IDs.
   // Pull a broad window for mixed-node views, and oversample focused history
@@ -146,7 +159,7 @@ const fetchHardwareTelemetry = async (options: TelemetryQueryOptions) => {
     ))
     .map(([pushId, row]) => normalizeHardwareTelemetry(row, pushId))
     .filter((row) => !requestedNode || row.Node_ID === requestedNode)
-    .filter((row) => hardwareNodeIds.has(row.Node_ID))
+    .filter((row) => legacyFirebaseNodeIds.has(row.Node_ID))
     .filter((row) => {
       const timestamp = Date.parse(row.Timestamp);
       if (!Number.isFinite(timestamp)) return false;
@@ -156,12 +169,56 @@ const fetchHardwareTelemetry = async (options: TelemetryQueryOptions) => {
     });
 };
 
+const normalizeSupabaseHardwareTelemetry = (row: Record<string, unknown>): TelemetryRow => ({
+  ...row,
+  Node_ID: normalizeNodeId(row.Node_ID ?? row.node_id),
+  Timestamp: String(row.Timestamp ?? row.timestamp ?? row.created_at ?? ""),
+  Nitrogen_mg_k: row.Nitrogen_mg_k ?? row.nitrogen,
+  Phosphorus_m: row.Phosphorus_m ?? row.phosphorus,
+  Potassium_mg_: row.Potassium_mg_ ?? row.potassium,
+  "Moisture_%": row["Moisture_%"] ?? row.moisture,
+  Temperature_C: row.Temperature_C ?? row.temperature ?? row.temp,
+  "Humidity_%": row["Humidity_%"] ?? row.humidity,
+  Latitude: hardwareNumber(row.Latitude ?? row.latitude),
+  Longitude: hardwareNumber(row.Longitude ?? row.longitude),
+  Altitude_m: hardwareNumber(row.Altitude_m ?? row.altitude),
+  Satellites: row.Satellites ?? row.satellites,
+  Season: row.Season ?? row.season,
+  GPS_Source: row.GPS_Source ?? row.gps_source,
+  Data_Source: "hardware",
+});
+
+const fetchSupabaseHardwareTelemetry = async (options: TelemetryQueryOptions) => {
+  const requestedNode = normalizeNodeId(options.nodeId);
+  if (requestedNode && !hardwareNodeIds.has(requestedNode)) return [];
+
+  let query = supabase;
+  if (HARDWARE_SUPABASE_URL && HARDWARE_SUPABASE_KEY) {
+    query = createClient(HARDWARE_SUPABASE_URL, HARDWARE_SUPABASE_KEY) as typeof supabase;
+  } else {
+    return [];
+  }
+
+  let request = query.from(HARDWARE_SUPABASE_TABLE).select("*").in("Node_ID", [...HARDWARE_NODE_IDS]);
+  if (requestedNode) request = request.eq("Node_ID", requestedNode);
+  if (options.start) request = request.gte("Timestamp", options.start);
+  if (options.end) request = request.lte("Timestamp", options.end);
+  request = request.order("Timestamp", { ascending: options.ascending ?? false });
+  if (options.limit) request = request.limit(options.limit);
+
+  const { data, error } = await request;
+  if (error) throw error;
+  return (Array.isArray(data) ? data : []).map(normalizeSupabaseHardwareTelemetry);
+};
+
 export async function fetchTelemetry(options: TelemetryQueryOptions = {}): Promise<TelemetryRow[]> {
   const requestedNode = normalizeNodeId(options.nodeId);
   const requests: Array<Promise<TelemetryRow[]>> = [];
 
   if (!requestedNode || hardwareNodeIds.has(requestedNode)) {
-    requests.push(fetchHardwareTelemetry(options));
+    requests.push(HARDWARE_SUPABASE_URL && HARDWARE_SUPABASE_KEY
+      ? fetchSupabaseHardwareTelemetry(options)
+      : fetchHardwareTelemetry(options));
   }
   if (!requestedNode || simulatorNodeIds.has(requestedNode)) {
     requests.push(fetchSimulatorTelemetry(options));

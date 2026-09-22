@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover - optional dependency
     Client = None
     create_client = None
 
-from backend.ml import firebase_hardware, soil_health
+from backend.ml import firebase_hardware, soil_health, supabase_hardware
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,25 @@ def fetch_node_window(node_id: str, limit: int = DEFAULT_WINDOW) -> dict[str, An
     """
 
     cleaned_node = str(node_id).strip().upper()
+    if cleaned_node in supabase_hardware.HARDWARE_NODE_IDS and supabase_hardware.is_configured():
+        try:
+            rows = supabase_hardware.fetch_hardware_rows(cleaned_node, limit=limit)
+        except Exception as exc:  # pragma: no cover - network path
+            logger.warning("Hardware Supabase window query failed for %s: %s", cleaned_node, exc)
+            return {"status": "unavailable", "reason": "Unable to retrieve sensor data."}
+        if not rows:
+            return {"status": "insufficient_data", "message": f"No sensor data found for {cleaned_node}.", "count": 0}
+        return {
+            "status": "ok",
+            "rows": rows,
+            "latest": rows[-1],
+            "crop": rows[-1].get("Target_Crop"),
+            "count": len(rows),
+        }
+
+    if cleaned_node == "NODE_03":
+        return {"status": "unavailable", "reason": "Hardware Supabase credentials are not configured."}
+
     if firebase_hardware.is_physical_node(cleaned_node):
         try:
             rows = firebase_hardware.fetch_hardware_rows(cleaned_node, limit=limit)

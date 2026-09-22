@@ -45,6 +45,17 @@ source type. Stale, missing, and invalid readings are excluded from numeric map
 comparisons; nodes without valid coordinates remain selectable in the location
 cards. Marker colours describe measured points, not interpolated field areas.
 
+The Nodes page shows summary cards and a vertical list of sensor meters for
+each node, and automatically requests a crop prediction when a node's
+latest reading changes. Each recommendation uses its latest 24 chronological
+readings (Firebase for physical nodes and Supabase for simulated nodes) with the
+saved notebook model, imputer, scaler, and crop labels. Refresh recalculates a
+node's prediction. Model scores below 50%, or more than 25% estimated input
+values, are labelled tentative; this display rule is not a calibrated measure of
+agronomic suitability. Recorded plantings remain separate from recommendations.
+The API exposes the actual reading period and estimated input count, and Soil
+Doctor receives the same prediction evidence for hardware nodes.
+
 The homepage requests `field_summary` mode: one plain-language sentence, at most
 45 words, covering the selected field area's main condition or change over the
 available recorded period and one action when needed. It uses recent history

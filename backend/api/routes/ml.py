@@ -70,7 +70,7 @@ class ClassifySuitabilityRequest(BaseModel):
 
 
 @router.post("/ml/classify-suitability", tags=["Machine Learning"])
-async def classify_suitability(request: ClassifySuitabilityRequest):
+def classify_suitability(request: ClassifySuitabilityRequest):
     """
     Classify a node's soil as Good / Fair / Poor for the crop it is dedicated to.
 
@@ -93,6 +93,7 @@ async def classify_suitability(request: ClassifySuitabilityRequest):
     predicted_crop = None
     crop_confidence = None
     crop_probabilities = None
+    crop_prediction = None
     try:
         from backend.ml import lstm_crop_inference
 
@@ -114,6 +115,11 @@ async def classify_suitability(request: ClassifySuitabilityRequest):
         "crop_confidence": crop_confidence,
         "crop_probabilities": crop_probabilities,
         "crop_model_available": predicted_crop is not None,
+        "crop_prediction": crop_prediction,
+        "crop_status": "ready" if predicted_crop else (
+            "insufficient_data" if window["count"] < LEGACY_SUITABILITY_SEQUENCE_LENGTH else "unavailable"
+        ),
+        "readings_required": LEGACY_SUITABILITY_SEQUENCE_LENGTH,
         "crop_profile": soil_health.normalize_crop(crop),
         "readings_used": window["count"],
         "threshold_label": threshold_label,
