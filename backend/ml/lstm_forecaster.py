@@ -13,6 +13,7 @@ from typing import Any
 import joblib
 import numpy as np
 
+from backend.ml import keras_compat
 from backend.ml.temporal_data import FEATURE_COLUMNS, FEATURE_OUTPUT_NAMES
 
 
@@ -33,6 +34,7 @@ _model: Any | None = None
 _scaler: Any | None = None
 _metadata: dict[str, Any] | None = None
 _artifact_signature: tuple[float, float, float] | None = None
+_status_cache: tuple[tuple[float, float, float] | None, dict[str, Any]] | None = None
 
 
 def _signature() -> tuple[float, float, float] | None:
@@ -43,6 +45,17 @@ def _signature() -> tuple[float, float, float] | None:
 
 
 def artifact_status() -> dict[str, Any]:
+    """Describe the deployed forecaster; cached until the artifact files change."""
+    global _status_cache
+    signature = _signature()
+    if _status_cache is not None and _status_cache[0] == signature:
+        return dict(_status_cache[1])
+    status = _read_artifact_status()
+    _status_cache = (signature, status)
+    return dict(status)
+
+
+def _read_artifact_status() -> dict[str, Any]:
     missing = [str(path) for path in (MODEL_PATH, SCALER_PATH, METADATA_PATH) if not path.exists()]
     if missing:
         return {
@@ -69,7 +82,13 @@ def artifact_status() -> dict[str, Any]:
         "sequence_length": metadata.get("sequence_length"),
         "forecast_steps": metadata.get("forecast_steps"),
         "feature_order": metadata.get("feature_order"),
+        "sampling_interval_minutes": metadata.get("sampling_interval_minutes"),
+        "target_mode": metadata.get("target_mode", "absolute"),
+        "data_provenance": metadata.get("data_provenance"),
+        "window_counts": metadata.get("window_counts", {}),
         "validation_metrics": metadata.get("validation_metrics", {}),
+        "test_metrics": metadata.get("test_metrics", {}),
+        "skill_vs_baseline": metadata.get("skill_vs_baseline", {}),
     }
 
 
@@ -99,15 +118,37 @@ def _load_artifacts() -> tuple[Any, Any, dict[str, Any]]:
                 f"expected {list(FEATURE_COLUMNS)}, received {list(feature_order)}."
             )
         scaler = joblib.load(SCALER_PATH)
-        # Keras 3 is configured to use torch because the backend RAG stack uses
-        # PyTorch and should not initialise TensorFlow merely for inference.
-        os.environ.setdefault("KERAS_BACKEND", "torch")
-        import keras  # noqa: PLC0415 - intentionally lazy
-
-        model = keras.saving.load_model(str(MODEL_PATH))
+        model = keras_compat.load_keras_model(MODEL_PATH)
         _model, _scaler, _metadata = model, scaler, metadata
         _artifact_signature = signature
         return model, scaler, metadata
+
+
+# How the network's output relates to the forecast, recorded in metadata:
+#   "absolute"         the output is the scaled future value itself
+#   "delta_from_last"  the output is the change from the newest input reading,
+#                      so an untrained output of zero equals "no change"
+TARGET_MODES = ("absolute", "delta_from_last")
+
+
+def to_targets(inputs: np.ndarray, futures: np.ndarray, target_mode: str) -> np.ndarray:
+    """Convert scaled future values into what the network is trained to output."""
+    if target_mode == "delta_from_last":
+        return futures - inputs[:, -1:, :]
+    return futures
+
+
+def from_outputs(inputs: np.ndarray, outputs: np.ndarray, target_mode: str) -> np.ndarray:
+    """Convert network outputs back into scaled future values."""
+    if target_mode == "delta_from_last":
+        return outputs + inputs[:, -1:, :]
+    return outputs
+
+
+def predict_scaled(model: Any, scaled_inputs: np.ndarray, metadata: dict[str, Any]) -> np.ndarray:
+    """Forecast scaled future values for a batch of scaled input windows."""
+    outputs = np.asarray(keras_compat.predict(model, scaled_inputs))
+    return from_outputs(scaled_inputs, outputs, str(metadata.get("target_mode") or "absolute"))
 
 
 def _format_duration(minutes: float) -> str:
@@ -192,7 +233,11 @@ def forecast(
         }
 
     scaled = scaler.transform(values)
-    raw = np.asarray(model.predict(scaled.reshape(1, sequence_length, len(FEATURE_COLUMNS)), verbose=0))
+    raw = predict_scaled(
+        model,
+        scaled.reshape(1, sequence_length, len(FEATURE_COLUMNS)),
+        metadata,
+    )
     expected = (1, int(metadata["forecast_steps"]), len(FEATURE_COLUMNS))
     if raw.shape != expected:
         return {
@@ -238,9 +283,39 @@ def forecast(
         "status": "success",
         "forecast": checkpoints,
         "forecast_trends": trends,
+        "forecast_skill": summarize_skill(metadata),
         "uncertainty_note": (
             "Prediction intervals are included only where held-out validation residuals were saved; "
             "uncertainty generally grows with the horizon."
         ),
         "model": artifact_status(),
+    }
+
+
+def summarize_skill(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Condense the held-out comparison against naive baselines per sensor.
+
+    A sensor is ``informative`` only when the LSTM beat the better naive
+    baseline on unseen test windows; otherwise its forecast is a level
+    estimate and should not be read as a predicted change.
+    """
+    skill = metadata.get("skill_vs_baseline") or {}
+    per_sensor = skill.get("per_sensor") or {}
+    if not per_sensor:
+        return {"status": "not_evaluated"}
+    informative = sorted(name for name, entry in per_sensor.items() if entry.get("informative"))
+    return {
+        "status": "evaluated",
+        "evaluated_on": skill.get("evaluated_on", "held_out_test_windows"),
+        "informative_sensors": informative,
+        "level_estimate_only_sensors": sorted(set(per_sensor) - set(informative)),
+        "per_sensor": {
+            name: {
+                "lstm_mae": entry.get("lstm_mae"),
+                "best_baseline": entry.get("best_baseline"),
+                "best_baseline_mae": entry.get("best_baseline_mae"),
+                "improvement_pct": entry.get("improvement_pct"),
+            }
+            for name, entry in per_sensor.items()
+        },
     }

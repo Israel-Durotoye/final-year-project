@@ -13,13 +13,7 @@ from datetime import datetime, timezone
 from statistics import median
 from typing import Any, Callable, Iterable
 
-from backend.ml import firebase_hardware
-
-try:
-    from supabase import Client, create_client
-except ImportError:  # pragma: no cover - optional in unit-test environments
-    Client = None
-    create_client = None
+from backend.ml import node_data
 
 
 FARM_DATA_TABLE = os.getenv("FARM_DATA_TABLE", "capstone_dataset")
@@ -126,33 +120,31 @@ class PreparedTemporalData:
         return self.analysis_rows[self.contiguous_tail_start :]
 
 
-def _resolve_credentials() -> tuple[str | None, str | None]:
-    return (
-        os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL"),
-        os.getenv("SUPABASE_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY"),
-    )
-
-
 def fetch_node_history(
     node_id: str,
     *,
     limit: int = HISTORY_ROWS,
     client: Any | None = None,
 ) -> dict[str, Any]:
-    """Fetch one full sensor row-set, newest first in SQL then oldest first here."""
+    """Fetch one node's recent rows, oldest first.
+
+    Runtime callers go through ``node_data`` so hardware and simulator nodes
+    are routed, cached and normalised in one place. ``client`` is a
+    dependency-injection seam for tests that supply a Supabase-like object.
+    """
     cleaned_node = str(node_id).strip()
     if not cleaned_node:
         return {"status": "unavailable", "reason": "node_id is required.", "rows": []}
 
-    if firebase_hardware.is_physical_node(cleaned_node):
-        try:
-            rows = firebase_hardware.fetch_hardware_rows(cleaned_node, limit=limit)
-        except Exception as exc:  # pragma: no cover - network-specific
+    if client is None:
+        window = node_data.fetch_node_window(cleaned_node, limit=limit)
+        if window["status"] == "unavailable":
             return {
                 "status": "unavailable",
-                "reason": f"Unable to retrieve sensor history: {str(exc)[:160]}",
+                "reason": window.get("reason", "Sensor history is unavailable."),
                 "rows": [],
             }
+        rows = list(window.get("rows") or [])
         return {
             "status": "ok" if rows else "insufficient_history",
             "node_id": cleaned_node,
@@ -160,26 +152,7 @@ def fetch_node_history(
             "count": len(rows),
         }
 
-    if client is None:
-        if create_client is None:
-            return {
-                "status": "unavailable",
-                "reason": "Supabase package is not installed.",
-                "rows": [],
-            }
-        url, key = _resolve_credentials()
-        if not url or not key:
-            return {
-                "status": "unavailable",
-                "reason": "Supabase credentials are not configured.",
-                "rows": [],
-            }
-        client = create_client(url, key)
-
     try:
-        # select("*") is intentional: PostgREST's select parser requires special
-        # quoting for production columns containing '%'. This is still one query
-        # for all measured parameters and preserves Target_Crop for context.
         result = (
             client.table(FARM_DATA_TABLE)
             .select("*")
@@ -472,3 +445,23 @@ def complete_feature_matrix(rows: list[dict[str, Any]]) -> list[list[float]] | N
             return None
         matrix.append([float(value) for value in values if value is not None])
     return matrix
+
+
+def feature_matrix_with_gaps(rows: list[dict[str, Any]]) -> list[list[float]]:
+    """Return a feature matrix that marks every unusable value as NaN.
+
+    Window builders check each window for NaN, so one missing reading only
+    removes the windows that contain it instead of discarding a whole segment.
+    """
+    matrix: list[list[float]] = []
+    for row in rows:
+        values = [_number(row.get(feature)) for feature in FEATURE_COLUMNS]
+        matrix.append([math.nan if value is None else float(value) for value in values])
+    return matrix
+
+
+def latest_complete_window(rows: list[dict[str, Any]], length: int) -> list[list[float]] | None:
+    """Return the newest ``length`` rows as a matrix when all of them are complete."""
+    if length <= 0 or len(rows) < length:
+        return None
+    return complete_feature_matrix(rows[-length:])

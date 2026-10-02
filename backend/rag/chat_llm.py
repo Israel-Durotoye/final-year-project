@@ -37,7 +37,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 try:
     import tiktoken
@@ -49,14 +49,8 @@ try:
 except ImportError:
     OpenAI = None
 
-try:
-    from supabase import Client, create_client
-except ImportError:
-    Client = None
-    create_client = None
-
-from backend.ml import firebase_hardware, supabase_hardware
-from backend.rag import diagnostics, prescriptions
+from backend.ml import node_data
+from backend.rag import prescriptions
 from backend.rag.field_report import (
     FIELD_REPORT_INSTRUCTION, REPORT_SECTIONS, build_report_evidence, report_content,
     render_evidence_report, usable_local_report,
@@ -92,6 +86,8 @@ DEFAULT_MAX_TOKENS = 1024
 DEFAULT_TOP_P = 0.90
 
 RERANK_SCORE_THRESHOLD = -3.0
+# Upper bound on knowledge chunks after merging the two retrieval passes.
+MAX_CONTEXT_CHUNKS = 4
 
 AGENTROUTER_API_BASE_URL = os.getenv(
     "AGENTROUTER_API_BASE_URL",
@@ -147,7 +143,8 @@ API_BACKOFF_MULTIPLIER = 2.0
 # The dashboard and Nodes page read this telemetry table. Override it in the
 # environment if production uses a different table name.
 FARM_DATA_TABLE = os.getenv("FARM_DATA_TABLE", "capstone_dataset")
-FARM_SNAPSHOT_FETCH_LIMIT = 500
+# Matches the temporal history length so one cached window serves both.
+_SNAPSHOT_HISTORY_ROWS = int(os.getenv("TEMPORAL_HISTORY_ROWS", "100"))
 
 # SYSTEM INSTRUCTION
 
@@ -192,6 +189,22 @@ TEMPORAL EVIDENCE RULES
 8. The temporal layer reports sensor patterns, not fertiliser dosage, crop disease,
    rainfall, irrigation, or leaching conclusions. Use relevant RAG evidence and
    farm context before making agronomic interpretations.
+
+LSTM MODEL EVIDENCE RULES
+1. LSTM MODEL EVIDENCE summarises three trained models for each node: the
+   forecaster (future estimates), the anomaly screen (whether the newest readings
+   look unlike what the model learned), and the crop recommendation.
+2. An anomaly flag means the sensor pattern is unusual. It is a reason to check
+   the sensor and the field, never a diagnosis of a crop or soil problem. Name
+   the sensors it points to. Do not mention the screen when it reports normal.
+3. `forecast_outlook.risks` lists sensors forecast to leave the crop's reference
+   range. When `forecast_reliability` says "level estimate only", describe it as
+   weak evidence and do not base an action on it alone.
+4. A crop recommendation is a strategic comparison for the next planting. It is
+   not evidence that the current crop is failing.
+5. Describe model output in plain words ("the forecast suggests", "the readings
+   look unusual"). Do not say "LSTM", "autoencoder" or "reconstruction error"
+   unless the user asks how the system works.
 
 FARM-LEVEL RECOMMENDATION REASONING
 1. Before writing, silently classify the available parameters as:
@@ -338,6 +351,11 @@ def _build_local_prompt(messages: list[dict[str, Any]]) -> str:
         "FARM-LEVEL PRIORITY BRIEF",
         "KNOWLEDGE-BASE CONTEXT",
     )
+    lstm_evidence = _extract_local_prompt_section(
+        latest_user,
+        "LSTM MODEL EVIDENCE",
+        "FARM-LEVEL PRIORITY BRIEF",
+    )
     knowledge = _extract_local_prompt_section(
         latest_user,
         "KNOWLEDGE-BASE CONTEXT",
@@ -358,6 +376,7 @@ def _build_local_prompt(messages: list[dict[str, Any]]) -> str:
             question[-800:],
             knowledge[:2000],
             priority[:1400],
+            lstm_evidence[:900],
             snapshot[:1400],
         )
         if part
@@ -545,15 +564,35 @@ _LOCAL_LLM_CLIENT_LOCK = threading.Lock()
 # TOKEN / CONTEXT UTILITIES
 # ============================================================================
 
+_TOKEN_ENCODING: Any = None
+_TOKEN_ENCODING_RESOLVED = False
+
+
+def _token_encoding() -> Any:
+    """Resolve the tokenizer once; unknown model names use a general encoding."""
+    global _TOKEN_ENCODING, _TOKEN_ENCODING_RESOLVED
+    if not _TOKEN_ENCODING_RESOLVED:
+        _TOKEN_ENCODING_RESOLVED = True
+        if tiktoken is not None:
+            try:
+                _TOKEN_ENCODING = tiktoken.encoding_for_model(DEFAULT_MODEL)
+            except Exception:
+                try:
+                    _TOKEN_ENCODING = tiktoken.get_encoding("cl100k_base")
+                except Exception:
+                    _TOKEN_ENCODING = None
+    return _TOKEN_ENCODING
+
+
 def _estimate_token_count(text: str) -> int:
     """Estimate the number of tokens in text."""
 
     if not text:
         return 0
 
-    if tiktoken is not None:
+    encoding = _token_encoding()
+    if encoding is not None:
         try:
-            encoding = tiktoken.encoding_for_model(DEFAULT_MODEL)
             return len(encoding.encode(text))
         except Exception:
             pass
@@ -1245,7 +1284,7 @@ def _build_farm_management_context(
         "This is an internal prioritization aid derived from the live snapshot. "
         "Do not reproduce its classification buckets or JSON mechanically. "
         "Use knowledge-base evidence to validate crop-specific interpretation.\n"
-        f"{json.dumps(briefs, indent=2, default=str)}"
+        f"{json.dumps(briefs, default=str)}"
     )
 
 
@@ -1413,6 +1452,7 @@ def _split_temporal_prompt_context(
             "forecast_status": result.get("forecast_status"),
             "forecast": result.get("forecast"),
             "forecast_trends": result.get("forecast_trends"),
+            "forecast_outlook": result.get("forecast_outlook"),
             "uncertainty_note": result.get("uncertainty_note"),
             "model": {
                 key: model.get(key)
@@ -1433,6 +1473,155 @@ def _split_temporal_prompt_context(
         historical["reason"] = payload["reason"]
         future["reason"] = payload["reason"]
     return historical, future
+
+
+def _lstm_evidence_context(
+    farm_snapshot: dict[str, Any],
+    temporal_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Collect what the trained LSTM models report for each analysed node."""
+    snapshot_nodes = {
+        str(node.get("node_id") or "").strip().upper(): node
+        for node in farm_snapshot.get("nodes", [])
+        if isinstance(node, dict)
+    }
+    evidence: dict[str, Any] = {}
+    for node_id, result in ((temporal_context or {}).get("nodes") or {}).items():
+        if not isinstance(result, dict):
+            continue
+        anomaly = result.get("anomaly_screening") or {}
+        skill = result.get("forecast_skill") or {}
+        outlook = result.get("forecast_outlook") or {}
+        node = snapshot_nodes.get(str(node_id).strip().upper(), {})
+        entry: dict[str, Any] = {
+            "forecast": {
+                "status": result.get("forecast_status"),
+                "trends": result.get("forecast_trends") or {},
+                "informative_sensors": skill.get("informative_sensors", []),
+                "level_estimate_only_sensors": skill.get("level_estimate_only_sensors", []),
+                "risks": outlook.get("risks", []),
+            },
+            "anomaly_screen": {
+                key: anomaly.get(key)
+                for key in (
+                    "status",
+                    "is_anomalous",
+                    "severity",
+                    "error_to_threshold_ratio",
+                    "unusual_sensors",
+                    "largest_contributors",
+                    "window_end",
+                    "spans_data_gap",
+                    "interpretation",
+                )
+                if key in anomaly
+            },
+        }
+        if node.get("crop_recommendation"):
+            entry["crop_recommendation"] = {
+                "recommended_crop": node.get("ai_predicted_ideal_crop"),
+                "model_score": node["crop_recommendation"].get("confidence"),
+                "currently_planted_crop": node.get("currently_planted_crop"),
+            }
+        evidence[node_id] = entry
+    return evidence
+
+
+_MAX_CONDITION_TERMS = 9
+_CONDITION_TERMS = {
+    "excess_water": "waterlogging excess soil moisture drainage management",
+    "water_deficit": "low soil moisture drought stress irrigation scheduling",
+    "temperature_stress": "soil temperature stress mulching",
+    "nutrient_verification": "soil nutrient nitrogen phosphorus potassium fertiliser recommendation",
+    "soil_reaction": "soil pH acidity liming",
+    "salinity": "soil salinity management",
+    "soil_structure": "soil organic matter improvement",
+}
+
+
+def build_condition_query(
+    farm_snapshot: dict[str, Any],
+    temporal_context: dict[str, Any] | None,
+    node_ids: list[str] | None = None,
+) -> str:
+    """Turn detected field conditions and LSTM findings into a retrieval query.
+
+    A request such as "analyse NODE_05" says nothing about what is wrong, so
+    retrieving on the question alone returns generic text. This query names the
+    crop, the season and the conditions the rules and models actually found, so
+    the knowledge retrieved matches the field.
+    """
+    wanted = {str(node).strip().upper() for node in (node_ids or [])}
+    nodes = [
+        node
+        for node in farm_snapshot.get("nodes", [])
+        if isinstance(node, dict)
+        and (not wanted or str(node.get("node_id") or "").strip().upper() in wanted)
+    ]
+    terms: list[str] = []
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if text and text.casefold() not in {term.casefold() for term in terms}:
+            terms.append(text)
+
+    try:
+        planner = prescriptions.FarmRecommendationPlanner()
+    except Exception:
+        planner = None
+    for node in nodes[:4]:
+        add(node.get("currently_planted_crop"))
+        if planner is not None:
+            try:
+                for priority in planner.build_node_brief(node)["priorities"][:2]:
+                    add(_CONDITION_TERMS.get(priority["domain"], priority["label"]))
+            except Exception:
+                logger.debug("Priority brief unavailable for retrieval query", exc_info=True)
+
+    for node_id, result in ((temporal_context or {}).get("nodes") or {}).items():
+        if wanted and str(node_id).strip().upper() not in wanted:
+            continue
+        if not isinstance(result, dict):
+            continue
+        for risk in ((result.get("forecast_outlook") or {}).get("risks") or [])[:2]:
+            direction = "high" if risk.get("direction") == "above_reference_range" else "low"
+            add(f"{direction} {risk.get('sensor')} management")
+        for event in (result.get("events") or [])[:2]:
+            add(str(event.get("type") or "").replace("_", " "))
+        # Only trends with a clear management meaning are worth searching for;
+        # naming every sensor's direction would drown the query in noise.
+        history = result.get("historical_analysis") or {}
+        for sensor in ("nitrogen", "phosphorus", "potassium"):
+            if "falling" in str((history.get(sensor) or {}).get("trend") or ""):
+                add(f"{sensor} declining")
+        moisture_trend = str((history.get("moisture") or {}).get("trend") or "")
+        if "falling" in moisture_trend:
+            add("soil drying")
+        anomaly = result.get("anomaly_screening") or {}
+        if anomaly.get("is_anomalous"):
+            add("soil sensor reading reliability calibration")
+
+    if not terms:
+        return ""
+    if nodes:
+        add(nodes[0].get("season"))
+    return " ".join(terms[:_MAX_CONDITION_TERMS])
+
+
+def _merge_chunks(
+    primary: list["RetrievedChunk"],
+    secondary: list["RetrievedChunk"],
+    limit: int,
+) -> list["RetrievedChunk"]:
+    """Combine two retrieval passes, keeping the best-scored unique chunks."""
+    best: dict[str, Any] = {}
+    for chunk in [*primary, *secondary]:
+        key = getattr(chunk, "chunk_id", None) or getattr(chunk, "text", "")
+        current = best.get(key)
+        if current is None or getattr(chunk, "rerank_score", 0.0) > getattr(current, "rerank_score", 0.0):
+            best[key] = chunk
+    ranked = sorted(best.values(), key=lambda chunk: getattr(chunk, "rerank_score", 0.0), reverse=True)
+    return ranked[:limit]
 
 
 def _build_user_content(
@@ -1489,21 +1678,27 @@ def _build_user_content(
         conversation_history,
     )
     historical_context, future_context = _split_temporal_prompt_context(temporal_context)
+    lstm_evidence = _lstm_evidence_context(farm_snapshot, temporal_context)
 
+    # Compact JSON keeps the prompt small; the model does not need indentation.
     return (
         f"{history_section}"
         "LIVE FARM SNAPSHOT\n"
         "------------------\n"
         "This was fetched from the node telemetry table for this response.\n"
-        f"{json.dumps(farm_snapshot, indent=2, default=str)}\n\n"
+        f"{json.dumps(farm_snapshot, default=str)}\n\n"
         "TEMPORAL FARM ANALYSIS\n"
         "----------------------\n"
         "These are observed historical patterns, not predictions.\n"
-        f"{json.dumps(historical_context, indent=2, default=str)}\n\n"
+        f"{json.dumps(historical_context, default=str)}\n\n"
         "FUTURE SENSOR FORECAST\n"
         "----------------------\n"
         "These are uncertain model estimates beyond the latest reading. A null forecast is not evidence of stability.\n"
-        f"{json.dumps(future_context, indent=2, default=str)}\n\n"
+        f"{json.dumps(future_context, default=str)}\n\n"
+        "LSTM MODEL EVIDENCE\n"
+        "-------------------\n"
+        "Summary of the trained models per node: forecast reliability and risks, anomaly screen, crop recommendation.\n"
+        f"{json.dumps(lstm_evidence, default=str)}\n\n"
         "FARM-LEVEL PRIORITY BRIEF\n"
         "-------------------------\n"
         f"{farm_management_context}\n\n"
@@ -1518,169 +1713,90 @@ def _build_user_content(
 
 
 # ============================================================================
-# TELEMETRY EXTRACTION
-# ============================================================================
-
-def _extract_telemetry_from_context(
-    query: str,
-    context: str,
-) -> dict[str, float] | None:
-    """
-    Extract obvious numerical soil/sensor values from text.
-
-    This is only used to determine whether structured diagnostics may be
-    useful. It is NOT a substitute for live sensor data.
-    """
-
-    import re
-
-    text = f"{query} {context}".lower()
-
-    patterns = {
-        "ph": r"\bph\s*[:=]?\s*([\d.]+)",
-        "nitrogen": r"\b(?:nitrogen|n)\s*[:=]?\s*([\d.]+)",
-        "phosphorus": r"\b(?:phosphorus|phosphate)\s*[:=]?\s*([\d.]+)",
-        "potassium": r"\b(?:potassium|potash)\s*[:=]?\s*([\d.]+)",
-        "moisture": r"\b(?:moisture|soil moisture)\s*[:=]?\s*([\d.]+)",
-        "temperature": r"\b(?:temperature|temp)\s*[:=]?\s*([\d.]+)",
-        "salinity": r"\b(?:salinity|ec|conductivity)\s*[:=]?\s*([\d.]+)",
-        "organic_matter": r"\b(?:organic matter|om)\s*[:=]?\s*([\d.]+)",
-    }
-
-    telemetry: dict[str, float] = {}
-
-    for name, pattern in patterns.items():
-        match = re.search(pattern, text)
-
-        if match:
-            try:
-                telemetry[name] = float(match.group(1))
-            except ValueError:
-                continue
-
-    if len(telemetry) < 3:
-        return None
-
-    telemetry["timestamp"] = datetime.now(
-        timezone.utc
-    ).timestamp()
-
-    return telemetry
-
-
-# ============================================================================
 # TOOL: LIVE SENSOR DATA
 # ============================================================================
+
+def _reading_age_minutes(timestamp: Any) -> float | None:
+    try:
+        parsed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return round((datetime.now(timezone.utc) - parsed).total_seconds() / 60.0, 1)
+
+
+def _snapshot_entry(node_id: str, window: dict[str, Any]) -> dict[str, Any]:
+    """Describe one node's latest reading and its LSTM crop recommendation."""
+    row = window["latest"]
+    recorded_crop = row.get("Target_Crop")
+    declared_crop = None if recorded_crop else node_data.declared_crop(node_id)
+    age = _reading_age_minutes(row.get("Timestamp"))
+    entry: dict[str, Any] = {
+        "node_id": node_id,
+        "timestamp_utc": row.get("Timestamp"),
+        "reading_age_minutes": age,
+        "currently_planted_crop": recorded_crop or declared_crop,
+        "crop_source": (
+            "recorded_with_reading" if recorded_crop
+            else "declared_node_label" if declared_crop
+            else "unknown"
+        ),
+        # Always derived from the reading's wall-clock time; a device without
+        # a real-time clock cannot report a trustworthy season itself.
+        "season": get_nigerian_season(row.get("Timestamp")),
+        "nitrogen_mg_kg": row.get("Nitrogen_mg_k"),
+        "phosphorus_mg_kg": row.get("Phosphorus_m"),
+        "potassium_mg_kg": row.get("Potassium_mg_"),
+        "moisture_pct": row.get("Moisture_%"),
+        "temperature_c": row.get("Temperature_C"),
+        "humidity_pct": row.get("Humidity_%"),
+        "data_source": node_data.telemetry_source(node_id),
+    }
+    if row.get("Soil_pH") is not None:
+        entry["soil_ph"] = row.get("Soil_pH")
+
+    try:
+        from backend.ml.lstm_crop_inference import predict_for_node
+
+        crop_prediction = predict_for_node(node_id, window["rows"])
+    except Exception as exc:
+        logger.warning("Crop prediction unavailable for %s: %s", node_id, exc)
+        crop_prediction = None
+    if crop_prediction:
+        entry.update({
+            "ai_predicted_ideal_crop": crop_prediction["crop"],
+            "crop_recommendation": {
+                key: crop_prediction.get(key)
+                for key in ("crop", "confidence", "readings_used", "window_end", "imputed_values", "total_values")
+            },
+            "crop_recommendation_basis": (
+                "LSTM recommendation from the latest 24 readings; not a recorded "
+                "planting or a guarantee of yield. Model scores are not calibrated "
+                "probabilities of planting success."
+            ),
+        })
+    return entry
+
 
 def _get_farm_snapshot() -> dict[str, Any]:
     """Return the latest available reading for every node in the farm."""
 
-    if create_client is None:
-        return {
-            "status": "unavailable",
-            "reason": "Supabase package is not installed.",
-            "nodes": [],
-        }
-
-    supabase_url = os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY")
-
-    if not supabase_url or not supabase_key:
-        return {
-            "status": "unavailable",
-            "reason": "Supabase credentials are not configured.",
-            "nodes": [],
-        }
-
     try:
-        client: Client = create_client(supabase_url, supabase_key)
-        result = (
-            client
-            .table(FARM_DATA_TABLE)
-            .select("*")
-            .order("Timestamp", desc=True)
-            .limit(FARM_SNAPSHOT_FETCH_LIMIT)
-            .execute()
-        )
-        rows = getattr(result, "data", None) or []
+        node_ids = node_data.list_active_node_ids()
+        # One shared query loads every simulator node's history; the temporal
+        # analysis that follows reads the same cached windows.
+        node_data.prefetch_simulator_windows(node_ids, _SNAPSHOT_HISTORY_ROWS)
 
-        latest_by_node: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            node_id = str(row.get("Node_ID") or "").strip()
-            if node_id and node_id not in latest_by_node:
-                latest_by_node[node_id] = {
-                    "node_id": node_id,
-                    "timestamp_utc": row.get("Timestamp"),
-                    "currently_planted_crop": row.get("Target_Crop"),
-                    "season": get_nigerian_season(row.get("Timestamp")),
-                    "nitrogen_mg_kg": row.get("Nitrogen_mg_k"),
-                    "phosphorus_mg_kg": row.get("Phosphorus_m"),
-                    "potassium_mg_kg": row.get("Potassium_mg_"),
-                    "moisture_pct": row.get("Moisture_%"),
-                    "temperature_c": row.get("Temperature_C"),
-                    "humidity_pct": row.get("Humidity_%"),
-                    "communication_ok": row.get("communication_ok"),
-                }
-
-        hardware_ids = supabase_hardware.HARDWARE_NODE_IDS
-        hardware_reader = (
-            supabase_hardware.fetch_hardware_rows
-            if supabase_hardware.is_configured()
-            else firebase_hardware.fetch_hardware_rows
-        )
-        for hardware_node_id in sorted(hardware_ids):
-            try:
-                hardware_rows = hardware_reader(
-                    hardware_node_id,
-                    limit=24,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Hardware farm snapshot query failed for %s: %s",
-                    hardware_node_id,
-                    exc,
-                )
+        nodes: list[dict[str, Any]] = []
+        reasons: list[str] = []
+        for node_id in node_ids:
+            window = node_data.fetch_node_window(node_id, limit=_SNAPSHOT_HISTORY_ROWS)
+            if window.get("status") != "ok":
+                if window.get("reason"):
+                    reasons.append(str(window["reason"]))
                 continue
-            if not hardware_rows:
-                continue
-            row = hardware_rows[-1]
-            latest_by_node[hardware_node_id] = {
-                "node_id": hardware_node_id,
-                "timestamp_utc": row.get("Timestamp"),
-                "currently_planted_crop": None,
-                "season": row.get("Season") or get_nigerian_season(row.get("Timestamp")),
-                "nitrogen_mg_kg": row.get("Nitrogen_mg_k"),
-                "phosphorus_mg_kg": row.get("Phosphorus_m"),
-                "potassium_mg_kg": row.get("Potassium_mg_"),
-                "moisture_pct": row.get("Moisture_%"),
-                "temperature_c": row.get("Temperature_C"),
-                "humidity_pct": row.get("Humidity_%"),
-                "communication_ok": True,
-            }
-            try:
-                from backend.ml.lstm_crop_inference import predict_ideal_crop_from_rows
-
-                crop_prediction = predict_ideal_crop_from_rows(hardware_rows)
-                if crop_prediction:
-                    latest_by_node[hardware_node_id].update({
-                        "ai_predicted_ideal_crop": crop_prediction["crop"],
-                        "crop_recommendation": crop_prediction,
-                        "crop_recommendation_basis": (
-                            "Model recommendation from the latest 24 accumulated readings; "
-                            "not a recorded planting or a guarantee of yield. Model scores "
-                            "are not calibrated probabilities of planting success. Check "
-                            "imputed_values and window_end before presenting the recommendation."
-                        ),
-                    })
-            except Exception as exc:
-                logger.warning("Hardware crop prediction unavailable for %s: %s", hardware_node_id, exc)
-
-        return {
-            "status": "online",
-            "source_table": FARM_DATA_TABLE,
-            "node_count": len(latest_by_node),
-            "nodes": list(latest_by_node.values()),
-        }
+            nodes.append(_snapshot_entry(node_id, window))
     except Exception as exc:
         logger.warning("Farm snapshot query failed: %s", exc)
         return {
@@ -1689,140 +1805,47 @@ def _get_farm_snapshot() -> dict[str, Any]:
             "nodes": [],
         }
 
+    if not nodes:
+        return {
+            "status": "unavailable",
+            "reason": reasons[0] if reasons else "No node telemetry is available.",
+            "nodes": [],
+        }
+    return {
+        "status": "online",
+        "source_table": FARM_DATA_TABLE,
+        "node_count": len(nodes),
+        "nodes": nodes,
+    }
+
+
 def _get_live_sensor_data(node_id: str) -> dict[str, Any]:
     """Fetch the latest sensor reading for a node."""
 
-    cleaned_node = str(node_id).strip().upper()
-    if cleaned_node in supabase_hardware.HARDWARE_NODE_IDS and supabase_hardware.is_configured():
-        try:
-            rows = supabase_hardware.fetch_hardware_rows(cleaned_node, limit=1)
-        except Exception as exc:
-            logger.warning("Live hardware Supabase query failed for %s: %s", cleaned_node, exc)
-            return {"status": "offline", "reason": "Unable to retrieve physical sensor data."}
-        if not rows:
-            return {"status": "offline", "reason": f"No sensor data found for {cleaned_node}."}
-        row = rows[-1]
-        return {
-            "status": "online",
-            "node_id": row.get("Node_ID"),
-            "timestamp_utc": row.get("Timestamp"),
-            "nitrogen": row.get("Nitrogen_mg_k"),
-            "phosphorus": row.get("Phosphorus_m"),
-            "potassium": row.get("Potassium_mg_"),
-            "moisture": row.get("Moisture_%"),
-            "temperature": row.get("Temperature_C"),
-            "humidity": row.get("Humidity_%"),
-            "latitude": row.get("Latitude"),
-            "longitude": row.get("Longitude"),
-        }
-
-    if cleaned_node == "NODE_03":
+    cleaned_node = str(node_id).strip().upper().replace("-", "_").replace(" ", "_")
+    window = node_data.fetch_node_window(cleaned_node, limit=1)
+    if window.get("status") != "ok":
         return {
             "status": "offline",
-            "reason": "Hardware Supabase credentials are not configured.",
+            "reason": window.get("reason") or window.get("message") or "Unable to retrieve sensor data.",
         }
-
-    if firebase_hardware.is_physical_node(cleaned_node):
-        try:
-            rows = firebase_hardware.fetch_hardware_rows(cleaned_node, limit=1)
-        except Exception as exc:
-            logger.warning("Live hardware query failed for %s: %s", cleaned_node, exc)
-            return {
-                "status": "offline",
-                "reason": "Unable to retrieve physical sensor data.",
-            }
-        if not rows:
-            return {
-                "status": "offline",
-                "reason": f"No sensor data found for {cleaned_node}.",
-            }
-        row = rows[-1]
-        return {
-            "status": "online",
-            "node_id": row.get("Node_ID"),
-            "timestamp_utc": row.get("Timestamp"),
-            "nitrogen": row.get("Nitrogen_mg_k"),
-            "phosphorus": row.get("Phosphorus_m"),
-            "potassium": row.get("Potassium_mg_"),
-            "moisture": row.get("Moisture_%"),
-            "temperature": row.get("Temperature_C"),
-            "humidity": row.get("Humidity_%"),
-            "latitude": row.get("Latitude"),
-            "longitude": row.get("Longitude"),
-            "gps_source": row.get("GPS_Source"),
-        }
-
-    if create_client is None:
-        return {
-            "status": "offline",
-            "reason": "Supabase package is not installed.",
-        }
-
-    supabase_url = (
-        os.getenv("SUPABASE_URL")
-        or os.getenv("VITE_SUPABASE_URL")
-    )
-
-    supabase_key = (
-        os.getenv("SUPABASE_KEY")
-        or os.getenv("VITE_SUPABASE_ANON_KEY")
-    )
-
-    if not supabase_url or not supabase_key:
-        return {
-            "status": "offline",
-            "reason": "Supabase credentials are not configured.",
-        }
-
-    try:
-        client: Client = create_client(
-            supabase_url,
-            supabase_key,
-        )
-
-        result = (
-            client
-            .table(FARM_DATA_TABLE)
-            .select("*")
-            .eq("Node_ID", node_id)
-            .order("Timestamp", desc=True)
-            .limit(1)
-            .execute()
-        )
-
-        rows = getattr(result, "data", None) or []
-
-        if not rows:
-            return {
-                "status": "offline",
-                "reason": f"No sensor data found for {node_id}.",
-            }
-
-        row = rows[0]
-
-        return {
-            "status": "online",
-            "node_id": row.get("Node_ID"),
-            "timestamp_utc": row.get("Timestamp"),
-            "nitrogen": row.get("Nitrogen_mg_k"),
-            "phosphorus": row.get("Phosphorus_m"),
-            "potassium": row.get("Potassium_mg_"),
-            "moisture": row.get("Moisture_%"),
-            "temperature": row.get("Temperature_C"),
-            "humidity": row.get("Humidity_%"),
-        }
-
-    except Exception as exc:
-        logger.warning(
-            "Live sensor query failed for %s: %s",
-            node_id,
-            exc,
-        )
-
-        return {
-            "status": "offline",
-            "reason": "Unable to retrieve sensor data.",
-        }
+    row = window["latest"]
+    result = {
+        "status": "online",
+        "node_id": row.get("Node_ID"),
+        "timestamp_utc": row.get("Timestamp"),
+        "reading_age_minutes": _reading_age_minutes(row.get("Timestamp")),
+        "nitrogen": row.get("Nitrogen_mg_k"),
+        "phosphorus": row.get("Phosphorus_m"),
+        "potassium": row.get("Potassium_mg_"),
+        "moisture": row.get("Moisture_%"),
+        "temperature": row.get("Temperature_C"),
+        "humidity": row.get("Humidity_%"),
+    }
+    for source, target in (("Latitude", "latitude"), ("Longitude", "longitude"), ("GPS_Source", "gps_source")):
+        if row.get(source) is not None:
+            result[target] = row.get(source)
+    return result
 
 # The former moisture-only and crop-suitability tools are retained in their
 # legacy backend/ml modules for API/history compatibility, but are intentionally
@@ -1963,79 +1986,6 @@ def _execute_tool(
 
 
 # ============================================================================
-# DIAGNOSTICS
-# ============================================================================
-
-def _build_diagnostic_context(
-    telemetry: dict[str, Any] | None,
-) -> str:
-    """Generate structured diagnostic information when telemetry exists."""
-
-    if not telemetry:
-        return ""
-
-    try:
-        diagnostic_engine = diagnostics.SoilDiagnosticEngine()
-        diagnosis = diagnostic_engine.diagnose(**telemetry)
-
-        prescription_engine = prescriptions.PrescriptionEngine()
-        action_plan = prescription_engine.generate_action_plan(
-            diagnosis
-        )
-
-        diagnostic_data = {
-            "diagnosis": {
-                "issues": [
-                    {
-                        "parameter": issue.parameter,
-                        "measured_value": issue.measured_value,
-                        "optimal_range": issue.optimal_range,
-                        "severity": issue.severity.name,
-                        "description": issue.description,
-                        "root_cause": issue.root_cause,
-                    }
-                    for issue in diagnosis.issues
-                ],
-                "severity_summary": diagnosis.severity_summary.name,
-                "interactions": diagnosis.interactions,
-                "timestamp": diagnosis.timestamp,
-            },
-            "action_plan": {
-                "critical_first_steps": action_plan.critical_first_steps,
-                "expected_timeline": action_plan.expected_timeline,
-                "corrective_actions": [
-                    {
-                        "priority": action.priority,
-                        "action": action.action,
-                        "target_parameter": action.target_parameter,
-                        "severity": action.severity.name,
-                        "impact": action.impact,
-                        "dosage": action.dosage,
-                        "timeline": action.timeline,
-                        "reasoning": action.reasoning,
-                    }
-                    for action in action_plan.corrective_actions
-                ],
-                "monitoring_parameters": action_plan.monitoring_parameters,
-            },
-        }
-
-        return (
-            "\n\nSTRUCTURED DIAGNOSTIC RESULTS\n"
-            "-----------------------------\n"
-            f"{json.dumps(diagnostic_data, indent=2)}\n"
-            "END STRUCTURED DIAGNOSTIC RESULTS\n"
-        )
-
-    except Exception as exc:
-        logger.warning(
-            "Diagnostic generation failed: %s",
-            exc,
-        )
-        return ""
-
-
-# ============================================================================
 # MAIN RAG GENERATION
 # ============================================================================
 
@@ -2053,11 +2003,16 @@ def generate_rag_response(
     temperature: float = DEFAULT_TEMPERATURE,
     max_output_tokens: int = DEFAULT_MAX_TOKENS,
     rerank_threshold: float = RERANK_SCORE_THRESHOLD,
+    retriever: Callable[[str], list["RetrievedChunk"]] | None = None,
 ) -> RAGResponse:
     """
     Generate the final Soil Doctor answer.
 
     AgentRouter is primary; configured retryable failures fall back to Conduit.
+
+    ``retriever`` lets the generation layer run a second, condition-aware
+    knowledge search once the live readings and LSTM evidence are known. When
+    it is omitted only ``retrieved_chunks`` are used.
     """
 
     start_time = time.perf_counter()
@@ -2067,34 +2022,7 @@ def generate_rag_response(
         raise ValueError("A field report requires a selected node.")
 
     # ------------------------------------------------------------------
-    # 1. Select relevant RAG chunks
-    # ------------------------------------------------------------------
-
-    qualifying_chunks = [
-        chunk
-        for chunk in retrieved_chunks
-        if getattr(chunk, "rerank_score", float("-inf"))
-        >= rerank_threshold
-    ]
-
-    logger.info(
-        "RAG generation | Query='%s' | Total chunks=%d | Above threshold=%d",
-        user_query[:80],
-        len(retrieved_chunks),
-        len(qualifying_chunks),
-    )
-
-    context_block, sources = _build_context_block(
-        qualifying_chunks
-    )
-
-    context_block, was_truncated = _truncate_context_if_needed(
-        context_block,
-        user_query,
-    )
-
-    # ------------------------------------------------------------------
-    # 2. Fetch the current farm state for every response.
+    # 1. Fetch the current farm state for every response.
     # ------------------------------------------------------------------
 
     farm_snapshot = _get_farm_snapshot()
@@ -2119,6 +2047,59 @@ def generate_rag_response(
         "Temporal context | status=%s | nodes=%d",
         temporal_context.get("status"),
         temporal_context.get("nodes_analyzed", 0),
+    )
+
+    # ------------------------------------------------------------------
+    # 2. Select relevant RAG chunks. When the request analyses the farm,
+    #    search the knowledge base again for what the readings and LSTM
+    #    models actually found, not only for the wording of the question.
+    # ------------------------------------------------------------------
+
+    analysed_nodes = list((temporal_context.get("nodes") or {}).keys())
+    if retriever is not None and (analysed_nodes or is_field_assessment):
+        condition_query = build_condition_query(
+            farm_snapshot,
+            temporal_context,
+            analysed_nodes or [node_id],
+        )
+        if condition_query:
+            try:
+                condition_chunks = retriever(condition_query)
+            except Exception as exc:
+                logger.warning("Condition-aware retrieval failed: %s", exc)
+                condition_chunks = []
+            logger.info(
+                "Condition-aware retrieval | query='%s' | chunks=%d",
+                condition_query[:120],
+                len(condition_chunks),
+            )
+            retrieved_chunks = _merge_chunks(
+                list(retrieved_chunks),
+                condition_chunks,
+                limit=MAX_CONTEXT_CHUNKS,
+            )
+
+    qualifying_chunks = [
+        chunk
+        for chunk in retrieved_chunks
+        if getattr(chunk, "rerank_score", float("-inf"))
+        >= rerank_threshold
+    ]
+
+    logger.info(
+        "RAG generation | Query='%s' | Total chunks=%d | Above threshold=%d",
+        user_query[:80],
+        len(retrieved_chunks),
+        len(qualifying_chunks),
+    )
+
+    context_block, sources = _build_context_block(
+        qualifying_chunks
+    )
+
+    context_block, was_truncated = _truncate_context_if_needed(
+        context_block,
+        user_query,
     )
 
     # ------------------------------------------------------------------

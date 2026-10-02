@@ -1,18 +1,38 @@
 # Soil Doctor
 
-This workspace contains the Soil Doctor frontend. I updated the branding
-and switched the UI to a purple-first theme; favicon and OG image were
-replaced for local development.
+Soil Doctor is a smart-farming decision support system. Sensor nodes report
+soil nitrogen, phosphorus, potassium, moisture, temperature and humidity; three
+LSTM models analyse those readings; and a retrieval-augmented chat assistant
+turns the result into plain-language advice.
+
+## Running the system
+
+Open three terminals in the project root:
+
+```bash
+uvicorn backend.main:app --port 8000   # 1. backend API
+npm run dev                            # 2. web app on http://localhost:8080
+python sensor_simulator.py             # 3. simulated nodes NODE_04–NODE_07
+```
+
+See [`backend/README.md`](backend/README.md) for backend setup, the API and the
+LSTM models. The operational manual and the journal drafts are in
+[`docs/`](docs/).
 
 ## Mixed hardware and simulator telemetry
 
-The frontend combines the Firebase hardware feed and Supabase simulator feed
-into the existing UI schema:
+The system combines the hardware feed and the Supabase simulator feed into one
+schema:
 
-- `NODE_01` and `NODE_02` come from the Firebase Realtime Database log already
-  written by the physical gateway firmware.
-- `NODE_03` through `NODE_06` come from the simulator project's
+- `NODE_01`–`NODE_03` are physical nodes. They are read from the hardware
+  Supabase project when it is configured; otherwise `NODE_01` and `NODE_02`
+  come from the Firebase Realtime Database log written by the gateway firmware.
+- `NODE_04` through `NODE_07` come from the simulator project's
   `capstone_dataset` table.
+
+The simulator is stateful: each reading continues from the previous one
+(a daily temperature cycle, gradual drying with irrigation and rain events,
+slowly drifting nutrients) so the LSTM models have a real pattern to learn.
 
 Copy `.env.example` to `.env` and configure the simulator Supabase project and
 the physical gateway's Firebase Realtime Database URL.
@@ -74,7 +94,11 @@ is available for the visible answer; explicit caller settings can override it.
 The existing Conduit and local fallbacks remain enabled when configured.
 Restart the backend after changing `.env` model settings.
 
-By default, the simulator places `NODE_04`, `NODE_05`, and `NODE_06` in a
+The Nodes page also shows two model checks per node: a pattern check (the LSTM
+anomaly screen) and a short forecast outlook (the LSTM forecaster compared with
+the crop's reference range).
+
+By default, the simulator places `NODE_04` through `NODE_07` in a
 140-metre GPS cluster inside FUT Minna's Gidan Kwano main campus. Override
 `FUT_MINNA_CENTER_LATITUDE`, `FUT_MINNA_CENTER_LONGITUDE`, or
 `FUT_MINNA_NODE_RADIUS_METERS` when a different on-campus plot is required.

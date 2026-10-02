@@ -89,6 +89,15 @@ class TemporalAcceptanceTests(unittest.TestCase):
         self.assertEqual(wetting["cause_detail"], "rain_or_irrigation_unknown")
         self.assertNotIn("confirmed", json.dumps(wetting).lower())
 
+    def test_b2_flooded_paddy_is_not_a_saturation_event_for_rice(self) -> None:
+        wet_history = rows_for("NODE_05", [91, 93, 95, 96, 97, 98, 97, 96])
+        prepared = prepare_temporal_rows(wet_history, node_id="NODE_05")
+        generic = {event["type"] for event in analyze_history(prepared)["events"]}
+        self.assertIn("prolonged_saturation", generic)
+        rice = {event["type"] for event in analyze_history(prepared, "Rice")["events"]}
+        self.assertNotIn("prolonged_saturation", rice)
+        self.assertNotIn("sustained_wetting", rice)
+
     def test_c_isolated_moisture_spike_is_an_anomaly_not_wetting(self) -> None:
         prepared = prepare_temporal_rows(
             rows_for("NODE_03", [49, 50, 51, 99, 50, 51]),

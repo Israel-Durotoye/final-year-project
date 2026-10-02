@@ -19,11 +19,6 @@ Model artefacts (expected paths relative to this file):
 
 from __future__ import annotations
 
-# ── Backend override — must happen before any keras import ──────────────────
-import os
-os.environ["KERAS_BACKEND"] = "torch"
-# ────────────────────────────────────────────────────────────────────────────
-
 import json
 import logging
 import pathlib
@@ -32,7 +27,7 @@ from typing import Any, Sequence
 import joblib
 import numpy as np
 
-from backend.ml import soil_health
+from backend.ml import keras_compat, soil_health
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +97,7 @@ def _load_artefacts() -> None:
             "Train the model first via POST /api/v1/ml/train-suitability-model."
         )
     try:
-        import keras  # noqa: PLC0415 — intentional late import
-        _model = keras.saving.load_model(str(_MODEL_PATH))
+        _model = keras_compat.load_keras_model(_MODEL_PATH)
         logger.info("Loaded LSTM suitability model from %s", _MODEL_PATH)
     except Exception as exc:
         raise RuntimeError(f"Failed to load LSTM model from {_MODEL_PATH}: {exc}") from exc
@@ -163,7 +157,7 @@ def classify_soil_suitability(
     tensor = scaled.reshape(1, SEQUENCE_LENGTH, n_features)
 
     try:
-        raw_prediction = _model.predict(tensor, verbose=0)
+        raw_prediction = keras_compat.predict(_model, tensor)
     except Exception as exc:
         raise RuntimeError(f"LSTM model inference failed: {exc}") from exc
 

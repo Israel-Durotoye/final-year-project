@@ -168,6 +168,21 @@ MOISTURE_CLAY = MoistureThreshold(
 )
 
 
+# The farm's moisture probes report a 0–100 % relative scale, not volumetric
+# water content, so the texture-specific tables above do not apply to them.
+# These generic bounds match the reference profile in optimal_thresholds.json.
+MOISTURE_SENSOR_PERCENT = MoistureThreshold(
+    soil_type="Sensor relative scale (0-100 %)",
+    critical_dry=20.0,
+    dry=30.0,
+    moderate_dry=35.0,
+    optimal_low=40.0,
+    optimal_high=70.0,
+    wet=85.0,
+    critical_wet=95.0,
+)
+
+
 # ---------------------------------------------------------------------------
 # Temperature Thresholds (°C)
 # ---------------------------------------------------------------------------
@@ -341,9 +356,7 @@ def classify_moisture_severity(value: float, threshold: MoistureThreshold) -> Se
         return Severity.CRITICAL
     elif value <= threshold.dry:
         return Severity.HIGH
-    elif value <= threshold.moderate_dry:
-        return Severity.MODERATE
-    elif value <= threshold.optimal_low:
+    elif value < threshold.optimal_low:
         return Severity.MODERATE
     elif value <= threshold.optimal_high:
         return Severity.LOW  # Optimal

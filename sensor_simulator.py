@@ -1,7 +1,8 @@
 import os
 import time
 import random
-from math import cos, radians, sin
+from dataclasses import dataclass
+from math import cos, pi, radians, sin
 from datetime import datetime
 from typing import Any, Callable, Dict, List
 
@@ -152,27 +153,187 @@ def create_simulator_client() -> tuple[Client, httpx.Client]:
     return create_client(url, key, options), http_client
 
 
-def build_telemetry_batch(timestamp: datetime | None = None) -> List[Dict[str, Any]]:
+# --- Stateful telemetry model -------------------------------------------------
+#
+# Each reading continues from the previous one instead of being drawn at random.
+# Real soil does not jump between unrelated values every minute, and a sequence
+# model can only learn from data that has a pattern over time:
+#
+#   temperature  follows a daily cycle (coolest before dawn, warmest mid-afternoon)
+#   humidity     moves opposite to temperature
+#   moisture     dries slowly, faster when warm, and jumps up when the field is
+#                irrigated or it rains
+#   N, P, K      drift slowly around a field-specific level and dip slightly
+#                when water is added
+#
+# Values stay close to the crop's reference range in CROP_PROFILES.
+
+DRYING_HOURS = float(os.environ.get("SIMULATOR_DRYING_HOURS", "6"))
+RAIN_CHANCE_PER_MINUTE = {"rainy": 0.004, "dry": 0.0005}
+MAX_STEP_MINUTES = 60.0
+
+
+@dataclass
+class NodeState:
+    """The simulated field condition at one node."""
+
+    moisture: float
+    temperature_offset: float
+    humidity_offset: float
+    nitrogen: float
+    phosphorus: float
+    potassium: float
+    nitrogen_level: float
+    phosphorus_level: float
+    potassium_level: float
+    irrigation_point: float
+    timestamp: datetime
+
+
+_node_states: Dict[str, NodeState] = {}
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def _inner(bounds: tuple[float, float], rng: random.Random, margin: float = 0.25) -> float:
+    """Pick a level away from the edges of a reference range."""
+    low, high = bounds
+    span = high - low
+    return rng.uniform(low + span * margin, high - span * margin)
+
+
+def _new_state(profile: Dict[str, tuple], timestamp: datetime, rng: random.Random) -> NodeState:
+    moisture_low, moisture_high = profile["moisture"]
+    nitrogen, phosphorus, potassium = (_inner(profile[key], rng) for key in ("n", "p", "k"))
+    return NodeState(
+        moisture=rng.uniform(moisture_low + 0.3 * (moisture_high - moisture_low), moisture_high),
+        temperature_offset=0.0,
+        humidity_offset=0.0,
+        nitrogen=nitrogen,
+        phosphorus=phosphorus,
+        potassium=potassium,
+        nitrogen_level=nitrogen,
+        phosphorus_level=phosphorus,
+        potassium_level=potassium,
+        irrigation_point=moisture_low + rng.uniform(0.0, 2.0),
+        timestamp=timestamp,
+    )
+
+
+def _daily_cycle(timestamp: datetime) -> float:
+    """-1 at about 03:00, +1 at about 15:00."""
+    hour = timestamp.hour + timestamp.minute / 60.0
+    return sin(2 * pi * (hour - 9.0) / 24.0)
+
+
+def _revert(value: float, target: float, rate: float, noise: float, minutes: float, rng: random.Random) -> float:
+    """Move a value part of the way back to its level, plus a small random step."""
+    pull = 1.0 - (1.0 - rate) ** minutes
+    return value + (target - value) * pull + rng.gauss(0.0, noise) * minutes ** 0.5
+
+
+def advance_node_state(
+    state: NodeState,
+    profile: Dict[str, tuple],
+    timestamp: datetime,
+    rng: random.Random,
+) -> Dict[str, float]:
+    """Move one node forward to ``timestamp`` and return its sensor values."""
+    minutes = (timestamp - state.timestamp).total_seconds() / 60.0
+    minutes = _clamp(minutes, 0.0, MAX_STEP_MINUTES)
+    state.timestamp = timestamp
+    cycle = _daily_cycle(timestamp)
+
+    temp_low, temp_high = profile["temp"]
+    temp_mid, temp_span = (temp_low + temp_high) / 2.0, temp_high - temp_low
+    state.temperature_offset = _revert(state.temperature_offset, 0.0, 0.08, 0.12, minutes, rng)
+    temperature = _clamp(
+        temp_mid + 0.35 * temp_span * cycle + state.temperature_offset,
+        temp_low,
+        temp_high,
+    )
+
+    humidity_low, humidity_high = profile["humidity"]
+    humidity_mid, humidity_span = (humidity_low + humidity_high) / 2.0, humidity_high - humidity_low
+    state.humidity_offset = _revert(state.humidity_offset, 0.0, 0.08, 0.35, minutes, rng)
+    humidity = _clamp(
+        humidity_mid - 0.30 * humidity_span * cycle + state.humidity_offset,
+        humidity_low,
+        humidity_high,
+    )
+
+    moisture_low, moisture_high = profile["moisture"]
+    moisture_span = moisture_high - moisture_low
+    drying_per_minute = moisture_span / (DRYING_HOURS * 60.0)
+    warmth = 1.0 + 0.6 * (temperature - temp_mid) / temp_span
+    state.moisture -= drying_per_minute * warmth * minutes
+    state.moisture += rng.gauss(0.0, 0.08) * minutes ** 0.5
+
+    season = get_nigerian_season(timestamp).lower()
+    rain_chance = RAIN_CHANCE_PER_MINUTE["rainy" if "rainy" in season else "dry"]
+    watered = False
+    if state.moisture <= state.irrigation_point:
+        # The field is irrigated when it reaches the bottom of its range.
+        state.moisture += rng.uniform(0.6, 0.9) * moisture_span
+        state.irrigation_point = moisture_low + rng.uniform(0.0, 2.0)
+        watered = True
+    elif minutes > 0 and rng.random() < 1.0 - (1.0 - rain_chance) ** minutes:
+        state.moisture += rng.uniform(0.25, 0.6) * moisture_span
+        watered = True
+    state.moisture = _clamp(state.moisture, moisture_low - 3.0, moisture_high)
+
+    for name, level_name, key, rate, noise in (
+        ("nitrogen", "nitrogen_level", "n", 0.01, 0.35),
+        ("phosphorus", "phosphorus_level", "p", 0.01, 0.12),
+        ("potassium", "potassium_level", "k", 0.01, 0.30),
+    ):
+        low, high = profile[key]
+        value = _revert(getattr(state, name), getattr(state, level_name), rate, noise, minutes, rng)
+        if watered and name != "phosphorus":
+            # Added water dilutes the mobile nutrients for a while.
+            value -= rng.uniform(0.01, 0.03) * (high - low)
+        setattr(state, name, _clamp(value, low, high))
+
+    return {
+        "Moisture_%": round(state.moisture, 1),
+        "Temperature_C": round(temperature, 1),
+        "Humidity_%": round(humidity, 1),
+        "Nitrogen_mg_k": round(state.nitrogen, 2),
+        "Phosphorus_m": round(state.phosphorus, 2),
+        "Potassium_mg_": round(state.potassium, 2),
+    }
+
+
+def reset_node_states() -> None:
+    """Forget every simulated field condition (used by tests)."""
+    _node_states.clear()
+
+
+def build_telemetry_batch(
+    timestamp: datetime | None = None,
+    rng: random.Random | None = None,
+) -> List[Dict[str, Any]]:
     reading_timestamp = timestamp or datetime.now()
     reading_time = reading_timestamp.strftime("%Y-%m-%d %H:%M:%S")
+    generator = rng or random
     batch: List[Dict[str, Any]] = []
 
     for node_id in SIMULATED_NODE_IDS:
         config = NODES[node_id]
         profile = CROP_PROFILES[config["crop"]]
+        state = _node_states.get(node_id)
+        if state is None or reading_timestamp < state.timestamp:
+            state = _node_states[node_id] = _new_state(profile, reading_timestamp, generator)
         batch.append({
             "Timestamp": reading_time,
             "Node_ID": node_id,
-            "Moisture_%": round(random.uniform(*profile["moisture"]), 1),
-            "Temperature_C": round(random.uniform(*profile["temp"]), 1),
-            "Humidity_%": round(random.uniform(*profile["humidity"]), 1),
-            "Nitrogen_mg_k": round(random.uniform(*profile["n"]), 2),
-            "Phosphorus_m": round(random.uniform(*profile["p"]), 2),
-            "Potassium_mg_": round(random.uniform(*profile["k"]), 2),
+            **advance_node_state(state, profile, reading_timestamp, generator),
             "Latitude": config["lat"],
             "Longitude": config["lng"],
-            "Altitude_m": round(random.uniform(295.0, 305.0), 1),
-            "Satellites": random.choice([4, 5, 6, 7, 8, "ERR"]),
+            "Altitude_m": round(generator.uniform(295.0, 305.0), 1),
+            "Satellites": generator.choice([4, 5, 6, 7, 8, "ERR"]),
             "Season": get_nigerian_season(reading_timestamp),
             "Target_Crop": config["crop"],
         })

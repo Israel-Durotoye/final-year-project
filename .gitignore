@@ -30,3 +30,6 @@ venv/
 __pycache__/
 *.pyc
 *.pyo
+
+# Development experiments are never loaded by the live service
+backend/ml/model_artifacts/development_temporal_forecaster/

@@ -9,6 +9,7 @@ import { METRICS, evaluateNodeThresholds, loadAlertThresholds } from "@/lib/aler
 import { getSpatialAssessment, isMapNodeOnline } from "@/lib/mapSpatial";
 import { fetchTelemetry, latestTelemetryByNode, TelemetryRow } from "@/lib/telemetry";
 import { fetchCropRecommendations, isTentativeCropRecommendation, CropRecommendation } from "@/lib/cropRecommendation";
+import { describeOutlook, describePatternCheck, fetchModelInsights, ModelInsights } from "@/lib/modelInsights";
 
 const SENSOR_ROWS = [
   { key: "nitrogen", label: "Nitrogen", icon: Leaf, max: 1999 },
@@ -49,6 +50,7 @@ const Nodes = () => {
   const [thresholds, setThresholds] = useState(loadAlertThresholds);
   const [recommendations, setRecommendations] = useState<Record<string, CropRecommendation>>({});
   const [predicting, setPredicting] = useState<Record<string, boolean>>({});
+  const [insights, setInsights] = useState<Record<string, ModelInsights | null>>({});
   const mounted = useRef(false);
   const pendingPredictions = useRef(new Set<string>());
   const predictedTimestamps = useRef(new Map<string, string>());
@@ -87,8 +89,12 @@ const Nodes = () => {
     pendingPredictions.current.add(nodeId);
     setPredicting((current) => ({ ...current, [nodeId]: true }));
     try {
-      const results = await fetchCropRecommendations([nodeId]);
-      if (mounted.current) setRecommendations((current) => ({ ...current, ...results }));
+      // The crop model, the forecaster and the anomaly screen all read the same recent history.
+      const [results, modelInsights] = await Promise.all([fetchCropRecommendations([nodeId]), fetchModelInsights(nodeId)]);
+      if (mounted.current) {
+        setRecommendations((current) => ({ ...current, ...results }));
+        setInsights((current) => ({ ...current, [nodeId]: modelInsights }));
+      }
     } finally {
       pendingPredictions.current.delete(nodeId);
       if (mounted.current) setPredicting((current) => ({ ...current, [nodeId]: false }));
@@ -128,6 +134,7 @@ const Nodes = () => {
           : <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
             {assessed.map(({ node, assessment, online }) => {
               const recommendation = recommendations[node.Node_ID];
+              const nodeInsights = insights[node.Node_ID];
               const busy = predicting[node.Node_ID];
               const tentative = isTentativeCropRecommendation(recommendation);
               const recordedCrop = typeof node.Target_Crop === "string" ? node.Target_Crop.trim() : "";
@@ -172,6 +179,10 @@ const Nodes = () => {
                       <p>This is a suggested planting, not an identified crop.</p>
                     </div>
                   </details> : recommendation?.status === "insufficient_data" ? <p className="mt-1 text-[11px] text-muted-foreground">{recommendation.readingsUsed ?? 0} of {recommendation.readingsRequired ?? 24} readings collected.</p> : null}
+                  {node.Node_ID in insights && <dl className="mt-2 space-y-1 text-[11px] leading-relaxed" aria-label={`Model checks for ${node.Node_ID}`}>
+                    <div className="flex gap-2"><dt className="shrink-0 text-muted-foreground">Pattern check</dt><dd className={cn("font-medium", nodeInsights?.isAnomalous ? "text-warning" : "text-foreground")}>{describePatternCheck(nodeInsights)}</dd></div>
+                    <div className="flex gap-2"><dt className="shrink-0 text-muted-foreground">Forecast</dt><dd className={cn("font-medium", nodeInsights?.risks.length ? "text-warning" : "text-foreground")}>{describeOutlook(nodeInsights)}</dd></div>
+                  </dl>}
                 </div>
 
                 <dl className="mb-5 space-y-4" aria-label={`Sensor readings for ${node.Node_ID}`}>

@@ -4,16 +4,32 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import urlopen
+
+from backend.utils.season import get_nigerian_season
 
 
 PHYSICAL_NODE_IDS = {"NODE_01", "NODE_02"}
 FIREBASE_PUSH_ALPHABET = "-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz"
 DEFAULT_FIREBASE_URL = "https://capstone-2e26e-default-rtdb.firebaseio.com"
 MAX_FIREBASE_ROWS = 5000
+# Both physical nodes share one log, so every recent-window request downloads
+# the same tail. Ask for one common size and reuse the payload briefly.
+MIN_RECENT_ROWS = 200
+RECENT_CACHE_TTL_SECONDS = float(os.getenv("TELEMETRY_CACHE_SECONDS", "20"))
+
+_recent_cache_lock = threading.Lock()
+_recent_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def clear_cache() -> None:
+    with _recent_cache_lock:
+        _recent_cache.clear()
 
 
 def is_physical_node(node_id: str) -> bool:
@@ -69,7 +85,10 @@ def normalize_firebase_row(push_id: str, row: dict[str, Any]) -> dict[str, Any] 
         "Longitude": _number(row.get("longitude")),
         "Altitude_m": _number(row.get("altitude")),
         "Satellites": row.get("satellites"),
-        "Season": row.get("season"),
+        # The gateway has no real-time clock, so its own season field is not
+        # reliable; derive the season from the wall-clock push timestamp.
+        "Season": get_nigerian_season(timestamp),
+        "Device_Season": row.get("season"),
         "GPS_Source": row.get("gps_source"),
         "Device_Uptime_Seconds": row.get("timestamp"),
         "Data_Source": "hardware",
@@ -91,6 +110,20 @@ def _read_firebase_payload(url: str, timeout_seconds: float) -> dict[str, Any]:
         return {}
     if not isinstance(payload, dict):
         raise ValueError("Hardware Firebase returned an unexpected telemetry payload.")
+    return payload
+
+
+def _read_recent_payload(url: str, timeout_seconds: float) -> dict[str, Any]:
+    """Read the shared recent-log tail, reusing it for a few seconds."""
+    if RECENT_CACHE_TTL_SECONDS > 0:
+        with _recent_cache_lock:
+            cached = _recent_cache.get(url)
+        if cached is not None and time.monotonic() - cached[0] <= RECENT_CACHE_TTL_SECONDS:
+            return cached[1]
+    payload = _read_firebase_payload(url, timeout_seconds)
+    if RECENT_CACHE_TTL_SECONDS > 0:
+        with _recent_cache_lock:
+            _recent_cache[url] = (time.monotonic(), payload)
     return payload
 
 
@@ -148,11 +181,11 @@ def fetch_hardware_rows(
         return []
 
     firebase_url = _firebase_base_url()
-    requested_rows = min(max(max(limit, 1) * 2, 100), MAX_FIREBASE_ROWS)
+    requested_rows = min(max(max(limit, 1) * 2, MIN_RECENT_ROWS), MAX_FIREBASE_ROWS)
     query = urlencode({"orderBy": '"$key"', "limitToLast": requested_rows})
     url = f"{firebase_url}/readings/log.json?{query}"
 
-    payload = _read_firebase_payload(url, timeout_seconds)
+    payload = _read_recent_payload(url, timeout_seconds)
 
     rows: list[dict[str, Any]] = []
     for push_id, value in payload.items():

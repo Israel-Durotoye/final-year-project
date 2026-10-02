@@ -18,17 +18,14 @@ Model artefacts (expected paths relative to project root):
 
 from __future__ import annotations
 
-# ── Backend override — must happen before any keras import ──────────────────
-import os
-os.environ["KERAS_BACKEND"] = "torch"
-# ────────────────────────────────────────────────────────────────────────────
-
 import logging
 import pathlib
 from typing import Sequence
 
 import joblib
 import numpy as np
+
+from backend.ml import keras_compat
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +81,7 @@ def _load_artefacts() -> None:
             "Ensure backend/ml/lstm_moisture_model.keras has been placed in the project."
         )
     try:
-        import keras  # noqa: PLC0415 — intentional late import
-        _model = keras.saving.load_model(str(_MODEL_PATH))
+        _model = keras_compat.load_keras_model(_MODEL_PATH)
         logger.info("Loaded LSTM moisture model from %s", _MODEL_PATH)
     except Exception as exc:
         raise RuntimeError(f"Failed to load LSTM model from {_MODEL_PATH}: {exc}") from exc
@@ -157,7 +153,7 @@ def execute_moisture_prediction(recent_sensor_data: Sequence[Sequence[float]]) -
     # 4. Run LSTM inference
     # ------------------------------------------------------------------
     try:
-        raw_prediction = _model.predict(tensor, verbose=0)  # shape: [1, 1] or [1,]
+        raw_prediction = keras_compat.predict(_model, tensor)  # shape: [1, 1] or [1,]
     except Exception as exc:
         raise RuntimeError(f"LSTM model inference failed: {exc}") from exc
 

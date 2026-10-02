@@ -22,13 +22,14 @@ import numpy as np
 from dotenv import load_dotenv
 from sklearn.preprocessing import MinMaxScaler
 
-from backend.ml.lstm_forecaster import ARTIFACT_DIR
+from backend.ml.lstm_forecaster import ARTIFACT_DIR, TARGET_MODES, from_outputs, to_targets
+from backend.ml import node_data
 from backend.ml.temporal_data import (
     DEFAULT_SEQUENCE_LENGTH,
     FEATURE_COLUMNS,
     FEATURE_OUTPUT_NAMES,
     FARM_DATA_TABLE,
-    complete_feature_matrix,
+    feature_matrix_with_gaps,
     parse_timestamp,
     prepare_temporal_rows,
 )
@@ -47,16 +48,16 @@ TRAIN_FRACTION = float(os.getenv("TEMPORAL_TRAIN_FRACTION", "0.70"))
 VALIDATION_FRACTION = float(os.getenv("TEMPORAL_VALIDATION_FRACTION", "0.15"))
 MIN_TRAINING_WINDOWS = int(os.getenv("TEMPORAL_MIN_TRAINING_WINDOWS", "100"))
 RANDOM_SEED = int(os.getenv("TEMPORAL_RANDOM_SEED", "42"))
+SKILL_MARGIN_PCT = float(os.getenv("TEMPORAL_SKILL_MARGIN_PCT", "5"))
+# "auto" trains one model per target mode and keeps the one with the lower
+# error on validation windows.
+TARGET_MODE = os.getenv("TEMPORAL_TARGET_MODE", "auto")
 
 
 def fetch_all_telemetry(page_size: int = 1000, max_rows: int = 100000) -> list[dict[str, Any]]:
-    from supabase import create_client  # lazy: training-only dependency path
-
-    url = os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL")
-    key = os.getenv("SUPABASE_KEY") or os.getenv("VITE_SUPABASE_ANON_KEY")
-    if not url or not key:
+    client = node_data.get_supabase_client()
+    if client is None:
         raise ValueError("Supabase credentials are not configured.")
-    client = create_client(url, key)
     rows: list[dict[str, Any]] = []
     start = 0
     while start < max_rows:
@@ -148,9 +149,10 @@ def fit_training_scaler(segments_by_node: dict[str, list[list[dict[str, Any]]]])
     for segments in segments_by_node.values():
         for segment in segments:
             train_end, _ = _partition_bounds(len(segment))
-            matrix = complete_feature_matrix(segment[:train_end])
-            if matrix:
-                training_rows.extend(matrix)
+            matrix = np.asarray(feature_matrix_with_gaps(segment[:train_end]), dtype=np.float32)
+            if matrix.size:
+                # A reading with any missing sensor is skipped; the rest still count.
+                training_rows.extend(matrix[np.isfinite(matrix).all(axis=1)].tolist())
     if not training_rows:
         raise ValueError("No complete training-only sensor rows are available to fit the scaler.")
     scaler = MinMaxScaler()
@@ -194,10 +196,13 @@ def make_chronological_windows(
     }
     for segments in segments_by_node.values():
         for segment in segments:
-            matrix = complete_feature_matrix(segment)
-            if not matrix:
+            if len(segment) < sequence_length + forecast_steps:
                 continue
-            scaled = scaler.transform(np.asarray(matrix, dtype=np.float32))
+            # Missing readings stay NaN; MinMaxScaler passes NaN through and
+            # _windows_for_partition drops only the windows that contain one.
+            scaled = scaler.transform(
+                np.asarray(feature_matrix_with_gaps(segment), dtype=np.float32)
+            )
             train_end, validation_end = _partition_bounds(len(scaled))
             partitions = {
                 "train": (0, train_end),
@@ -293,6 +298,47 @@ def evaluate_forecast(
     return metrics, residual_intervals
 
 
+def baseline_predictions(inputs: np.ndarray, forecast_steps: int) -> dict[str, np.ndarray]:
+    """Naive forecasts from the same input windows the LSTM receives."""
+    persistence = np.repeat(inputs[:, -1:, :], forecast_steps, axis=1)
+    window_mean = np.repeat(inputs.mean(axis=1, keepdims=True), forecast_steps, axis=1)
+    return {"persistence": persistence, "window_mean": window_mean}
+
+
+def skill_against_baselines(
+    actual: np.ndarray,
+    predicted: np.ndarray,
+    baselines: dict[str, np.ndarray],
+) -> dict[str, Any]:
+    """Compare LSTM error with naive baselines over the whole horizon, per sensor."""
+    per_sensor: dict[str, Any] = {}
+    for feature_index, feature in enumerate(FEATURE_COLUMNS):
+        truth = actual[:, :, feature_index]
+        lstm_mae = float(np.mean(np.abs(predicted[:, :, feature_index] - truth)))
+        baseline_mae = {
+            name: float(np.mean(np.abs(values[:, :, feature_index] - truth)))
+            for name, values in baselines.items()
+        }
+        best_name = min(baseline_mae, key=baseline_mae.get)
+        best_mae = baseline_mae[best_name]
+        improvement = None if math.isclose(best_mae, 0.0) else (best_mae - lstm_mae) / best_mae * 100.0
+        per_sensor[FEATURE_OUTPUT_NAMES[feature]] = {
+            "lstm_mae": round(lstm_mae, 6),
+            "baseline_mae": {name: round(value, 6) for name, value in baseline_mae.items()},
+            "best_baseline": best_name,
+            "best_baseline_mae": round(best_mae, 6),
+            "improvement_pct": round(improvement, 3) if improvement is not None else None,
+            # Require a margin so sampling noise is not reported as skill.
+            "informative": bool(improvement is not None and improvement >= SKILL_MARGIN_PCT),
+        }
+    return {
+        "evaluated_on": "held_out_test_windows",
+        "baselines": sorted(baselines),
+        "skill_margin_pct": SKILL_MARGIN_PCT,
+        "per_sensor": per_sensor,
+    }
+
+
 def save_evaluation_plots(actual: np.ndarray, predicted: np.ndarray, directory: Path) -> None:
     import matplotlib
     matplotlib.use("Agg")
@@ -334,8 +380,13 @@ def train(
     forecast_steps: int = FORECAST_STEPS,
     epochs: int = 100,
     batch_size: int = 32,
+    target_mode: str = TARGET_MODE,
 ) -> dict[str, Any]:
     np.random.seed(RANDOM_SEED)
+    os.environ.setdefault("KERAS_BACKEND", "torch")
+    import keras
+
+    keras.utils.set_random_seed(RANDOM_SEED)
     segments, cadence = prepare_node_series(rows)
     scaler = fit_training_scaler(segments)
     windows = make_chronological_windows(
@@ -355,33 +406,65 @@ def train(
             f"at least {MIN_TRAINING_WINDOWS} are required. No model was saved."
         )
 
-    os.environ.setdefault("KERAS_BACKEND", "torch")
     from keras import callbacks
 
-    model = build_model(sequence_length, forecast_steps, len(FEATURE_COLUMNS))
-    model.fit(
-        windows["train"][0],
-        windows["train"][1],
-        validation_data=windows["validation"],
-        epochs=epochs,
-        batch_size=batch_size,
-        shuffle=False,
-        callbacks=[
-            callbacks.EarlyStopping(monitor="val_loss", patience=12, restore_best_weights=True),
-            callbacks.ReduceLROnPlateau(monitor="val_loss", patience=5, factor=0.5, min_lr=1e-5),
-        ],
-        verbose=1,
-    )
+    candidate_modes = TARGET_MODES if target_mode == "auto" else (target_mode,)
+    if any(mode not in TARGET_MODES for mode in candidate_modes):
+        raise ValueError(f"target_mode must be 'auto' or one of {TARGET_MODES}.")
 
-    validation_pred = _inverse(scaler, np.asarray(model.predict(windows["validation"][0], verbose=0)))
+    x_train, y_train = windows["train"]
+    x_validation, y_validation = windows["validation"]
+    candidates: dict[str, dict[str, Any]] = {}
+    for mode in candidate_modes:
+        keras.utils.set_random_seed(RANDOM_SEED)
+        candidate = build_model(sequence_length, forecast_steps, len(FEATURE_COLUMNS))
+        history = candidate.fit(
+            x_train,
+            to_targets(x_train, y_train, mode),
+            validation_data=(x_validation, to_targets(x_validation, y_validation, mode)),
+            epochs=epochs,
+            batch_size=batch_size,
+            shuffle=False,
+            callbacks=[
+                # min_delta stops the run once improvements become negligible.
+                callbacks.EarlyStopping(monitor="val_loss", patience=12, min_delta=1e-4, restore_best_weights=True),
+                callbacks.ReduceLROnPlateau(monitor="val_loss", patience=5, factor=0.5, min_lr=1e-5),
+            ],
+            verbose=2,
+        )
+        scaled_validation = from_outputs(
+            x_validation, np.asarray(candidate.predict(x_validation, verbose=0)), mode
+        )
+        candidates[mode] = {
+            "model": candidate,
+            "validation_mae_scaled": float(np.mean(np.abs(scaled_validation - y_validation))),
+            "epochs_run": len(history.history["loss"]),
+        }
+
+    # Model selection uses validation windows only; test windows stay unseen.
+    selected_mode = min(candidates, key=lambda mode: candidates[mode]["validation_mae_scaled"])
+    model = candidates[selected_mode]["model"]
+
+    def predict_partition(inputs: np.ndarray) -> np.ndarray:
+        return from_outputs(inputs, np.asarray(model.predict(inputs, verbose=0)), selected_mode)
+
+    validation_pred = _inverse(scaler, predict_partition(windows["validation"][0]))
     validation_actual = _inverse(scaler, windows["validation"][1])
-    test_pred = _inverse(scaler, np.asarray(model.predict(windows["test"][0], verbose=0)))
+    test_pred = _inverse(scaler, predict_partition(windows["test"][0]))
     test_actual = _inverse(scaler, windows["test"][1])
     checkpoints = sorted({min(forecast_steps, max(1, step)) for step in CHECKPOINT_STEPS})
     validation_metrics, residual_intervals = evaluate_forecast(
         validation_actual, validation_pred, checkpoints
     )
     test_metrics, _ = evaluate_forecast(test_actual, test_pred, checkpoints)
+    skill = skill_against_baselines(
+        test_actual,
+        test_pred,
+        {
+            name: _inverse(scaler, values)
+            for name, values in baseline_predictions(windows["test"][0], forecast_steps).items()
+        },
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     model.save(str(output_dir / "model.keras"))
@@ -397,6 +480,17 @@ def train(
         "target_order": list(FEATURE_COLUMNS),
         "sequence_length": sequence_length,
         "forecast_steps": forecast_steps,
+        "target_mode": selected_mode,
+        "model_selection": {
+            "criterion": "lowest_validation_mae_scaled",
+            "candidates": {
+                mode: {
+                    "validation_mae_scaled": round(info["validation_mae_scaled"], 6),
+                    "epochs_run": info["epochs_run"],
+                }
+                for mode, info in candidates.items()
+            },
+        },
         "checkpoint_steps": checkpoints,
         "sampling_interval_minutes": cadence,
         "input_history_duration_minutes": round(sequence_length * cadence, 4),
@@ -413,6 +507,7 @@ def train(
         "test_metrics": test_metrics,
         "validation_residual_intervals": residual_intervals,
         "residual_interval_coverage": 0.90,
+        "skill_vs_baseline": skill,
     }
     temporary_metadata = output_dir / "metadata.json.tmp"
     with temporary_metadata.open("w", encoding="utf-8") as handle:
@@ -445,6 +540,7 @@ def main() -> None:
     parser.add_argument("--forecast-steps", type=int, default=FORECAST_STEPS)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--target-mode", choices=("auto", *TARGET_MODES), default=TARGET_MODE)
     args = parser.parse_args()
 
     if args.csv:
@@ -465,6 +561,7 @@ def main() -> None:
         forecast_steps=args.forecast_steps,
         epochs=args.epochs,
         batch_size=args.batch_size,
+        target_mode=args.target_mode,
     )
     print(json.dumps(metadata, indent=2))
 

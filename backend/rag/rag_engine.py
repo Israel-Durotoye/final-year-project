@@ -23,7 +23,7 @@ Retrieval Architecture — True Hybrid Search:
     │  [Fusion]  Reciprocal Rank Fusion (RRF, k=60)              │
     │      └──► merged + deduplicated candidate pool             │
     │                                                            │
-    │  [Rerank]  BAAI/bge-reranker-large (FlagEmbedding)         │
+    │  [Rerank]  cross-encoder/ms-marco-MiniLM-L-6-v2            │
     │      └──► final top_k chunks, sorted by cross-encoder      │
     │           relevance score                                  │
     └────────────────────────────────────────────────────────────┘
@@ -49,7 +49,7 @@ BM25 Index Lifecycle:
     footprint is negligible (<10 MB).
 
 Dependencies:
-    pip install chromadb sentence-transformers FlagEmbedding rank_bm25
+    pip install chromadb sentence-transformers rank_bm25
 """
 
 from __future__ import annotations
@@ -58,6 +58,7 @@ import logging
 import os
 import pickle
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -166,20 +167,21 @@ class RAGEngine:
         engine.shutdown()            # Optional — releases model memory
 
     Threading note:
-        SentenceTransformer and FlagReranker are not thread-safe for concurrent
-        calls. In production, wrap the engine in an asyncio.Lock or use
-        a process pool. For a single-user Streamlit demo, this is not an issue.
+        The embedding model and the cross-encoder are not safe for concurrent
+        calls, and the API serves requests from several worker threads. Model
+        calls are therefore serialised with an internal lock.
     """
 
     def __init__(self) -> None:
         self._embedding_model  = None   # SentenceTransformer — loaded on initialize()
-        self._reranker         = None   # FlagReranker         — loaded on initialize()
+        self._reranker         = None   # CrossEncoder         — loaded on initialize()
         self._chroma_client    = None   # chromadb.PersistentClient
         self._collection       = None   # chromadb.Collection
         self._bm25_index       = None   # BM25Okapi instance
         self._bm25_doc_ids: list[str] = []   # ordered list of chunk IDs in BM25 index
         self._bm25_corpus: list[list[str]] = []  # tokenised corpus for BM25
         self._is_initialized   = False
+        self._model_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -192,7 +194,7 @@ class RAGEngine:
         not per-request.
 
         Raises:
-            ImportError  : If sentence-transformers or FlagEmbedding are not installed.
+            ImportError  : If sentence-transformers is not installed.
             RuntimeError : If ChromaDB cannot be reached.
         """
         if self._is_initialized:
@@ -417,11 +419,12 @@ class RAGEngine:
             Exception: If embedding or ChromaDB query fails (caught by hybrid_search).
         """
         try:
-            query_embedding = self._embedding_model.encode(
-                query,
-                normalize_embeddings=True,   # Required for cosine similarity
-                show_progress_bar=False,
-            ).tolist()
+            with self._model_lock:
+                query_embedding = self._embedding_model.encode(
+                    query,
+                    normalize_embeddings=True,   # Required for cosine similarity
+                    show_progress_bar=False,
+                ).tolist()
         except Exception as exc:
             logger.error("Embedding model failed to encode query: %s", exc)
             raise
@@ -486,13 +489,19 @@ class RAGEngine:
             raise
 
         # Normalise scores to [0, 1] using the max score in this query
-        max_score = max(raw_scores) if max(raw_scores) > 0 else 1.0
-        normalised = raw_scores / max_score
+        top_score = float(raw_scores.max()) if len(raw_scores) else 0.0
+        if top_score <= 0:
+            return []   # No query term occurs in the corpus; nothing to rank.
+        normalised = raw_scores / top_score
 
         # Sort descending by score and take top n_candidates
-        sorted_indices = sorted(
-            range(len(normalised)), key=lambda i: normalised[i], reverse=True
-        )[:n_candidates]
+        sorted_indices = [
+            index
+            for index in sorted(
+                range(len(normalised)), key=lambda i: normalised[i], reverse=True
+            )[:n_candidates]
+            if normalised[index] > 0   # A zero score means no shared term.
+        ]
 
         # Look up the full text and metadata for each candidate from ChromaDB
         # We only fetch IDs we actually need — avoids a full collection scan
@@ -601,7 +610,8 @@ class RAGEngine:
         pairs = [[query, doc["text"]] for doc in candidates]
         
         try:
-            scores = self._reranker.predict(pairs)
+            with self._model_lock:
+                scores = self._reranker.predict(pairs)
             if hasattr(scores, "tolist"):
                 scores = scores.tolist()
         except Exception as exc:

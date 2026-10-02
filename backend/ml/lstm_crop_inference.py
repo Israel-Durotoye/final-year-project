@@ -3,19 +3,17 @@ lstm_crop_inference.py
 Runs the LSTM Crop Recommendation model on live data.
 """
 
-import os
-os.environ["KERAS_BACKEND"] = "torch"
-
 import json
 import logging
 import pathlib
+import threading
 from typing import Any, Optional
 
 import joblib
 import numpy as np
 import pandas as pd
-import keras
-from backend.ml import node_data
+
+from backend.ml import keras_compat, node_data
 
 logger = logging.getLogger(__name__)
 
@@ -41,26 +39,50 @@ _model = None
 _imputer = None
 _scaler = None
 _labels = None
+_load_lock = threading.Lock()
+
+
+def artifact_status() -> dict[str, Any]:
+    missing = [
+        path.name
+        for path in (MODEL_PATH, IMPUTER_PATH, SCALER_PATH, LABELS_PATH)
+        if not path.exists()
+    ]
+    if missing:
+        return {"status": "not_trained", "deployed": False, "missing_artifacts": missing}
+    try:
+        with open(LABELS_PATH, "r", encoding="utf-8") as handle:
+            labels = json.load(handle)
+    except Exception as exc:
+        return {"status": "invalid_artifacts", "deployed": False, "reason": str(exc)}
+    return {
+        "status": "available",
+        "deployed": True,
+        "sequence_length": SEQUENCE_LENGTH,
+        "crops": [labels[key] for key in sorted(labels, key=int)],
+    }
+
 
 def load_artifacts():
     global _model, _imputer, _scaler, _labels
-    
+
     if not all(path.exists() for path in (MODEL_PATH, IMPUTER_PATH, SCALER_PATH, LABELS_PATH)):
         return False
-        
-    if any(artifact is None for artifact in (_model, _imputer, _scaler, _labels)):
-        try:
-            logger.info("Loading LSTM crop recommendation model...")
-            model = keras.models.load_model(MODEL_PATH, compile=False)
-            imputer = joblib.load(IMPUTER_PATH)
-            scaler = joblib.load(SCALER_PATH)
-            with open(LABELS_PATH, "r") as f:
-                labels = json.load(f)
-            _model, _imputer, _scaler, _labels = model, imputer, scaler, labels
-        except Exception as e:
-            logger.error(f"Failed to load LSTM artifacts: {e}")
-            return False
-            
+
+    with _load_lock:
+        if any(artifact is None for artifact in (_model, _imputer, _scaler, _labels)):
+            try:
+                logger.info("Loading LSTM crop recommendation model...")
+                model = keras_compat.load_keras_model(MODEL_PATH)
+                imputer = joblib.load(IMPUTER_PATH)
+                scaler = joblib.load(SCALER_PATH)
+                with open(LABELS_PATH, "r", encoding="utf-8") as f:
+                    labels = json.load(f)
+                _model, _imputer, _scaler, _labels = model, imputer, scaler, labels
+            except Exception as e:
+                logger.error(f"Failed to load LSTM artifacts: {e}")
+                return False
+
     return True
 
 def predict_ideal_crop_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -79,7 +101,7 @@ def predict_ideal_crop_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any] |
             return None
         imputed_data = _imputer.transform(feature_frame)
         scaled_data = _scaler.transform(imputed_data)
-        preds = _model.predict(np.expand_dims(scaled_data, axis=0), verbose=0)[0]
+        preds = keras_compat.predict(_model, np.expand_dims(scaled_data, axis=0))[0]
         if not np.isfinite(preds).all() or len(preds) != len(_labels):
             return None
         class_idx = int(np.argmax(preds))
@@ -99,6 +121,31 @@ def predict_ideal_crop_from_rows(rows: list[dict[str, Any]]) -> dict[str, Any] |
     except Exception as exc:
         logger.error("Prediction from sensor window failed: %s", exc)
         return None
+
+
+_prediction_cache: dict[str, tuple[Any, dict[str, Any] | None]] = {}
+_prediction_cache_lock = threading.Lock()
+
+
+def clear_cache() -> None:
+    with _prediction_cache_lock:
+        _prediction_cache.clear()
+
+
+def predict_for_node(node_id: str, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Predict once per new reading: reuse the result until the window changes."""
+    if len(rows) < SEQUENCE_LENGTH:
+        return None
+    key = str(node_id).strip().upper()
+    window_end = rows[-1].get("Timestamp")
+    with _prediction_cache_lock:
+        cached = _prediction_cache.get(key)
+    if cached is not None and cached[0] == window_end and window_end is not None:
+        return cached[1]
+    prediction = predict_ideal_crop_from_rows(rows)
+    with _prediction_cache_lock:
+        _prediction_cache[key] = (window_end, prediction)
+    return prediction
 
 
 def predict_ideal_crop(node_id: str) -> Optional[str]:

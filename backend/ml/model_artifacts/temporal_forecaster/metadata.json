@@ -1,0 +1,479 @@
+{
+  "model_name": "multivariate_temporal_lstm",
+  "task": "multi_step_multivariate_regression",
+  "trained_at": "2026-10-02T12:53:56.276260+00:00",
+  "data_provenance": "real_telemetry",
+  "deployment_eligible": true,
+  "feature_order": [
+    "Nitrogen_mg_k",
+    "Phosphorus_m",
+    "Potassium_mg_",
+    "Moisture_%",
+    "Temperature_C",
+    "Humidity_%"
+  ],
+  "target_order": [
+    "Nitrogen_mg_k",
+    "Phosphorus_m",
+    "Potassium_mg_",
+    "Moisture_%",
+    "Temperature_C",
+    "Humidity_%"
+  ],
+  "sequence_length": 48,
+  "forecast_steps": 48,
+  "target_mode": "absolute",
+  "model_selection": {
+    "criterion": "lowest_validation_mae_scaled",
+    "candidates": {
+      "absolute": {
+        "validation_mae_scaled": 0.117423,
+        "epochs_run": 69
+      },
+      "delta_from_last": {
+        "validation_mae_scaled": 0.131347,
+        "epochs_run": 100
+      }
+    }
+  },
+  "checkpoint_steps": [
+    6,
+    12,
+    24,
+    48
+  ],
+  "sampling_interval_minutes": 1.0166666666666666,
+  "input_history_duration_minutes": 48.8,
+  "forecast_duration_minutes": 48.8,
+  "chronological_split": {
+    "train": 0.7,
+    "validation": 0.15,
+    "test": 0.15,
+    "shuffle": false
+  },
+  "scaler_fit_scope": "training_rows_only",
+  "window_counts": {
+    "train": 764,
+    "validation": 136,
+    "test": 86
+  },
+  "validation_metrics": {
+    "6": {
+      "nitrogen_mg_kg": {
+        "mae": 9.938776,
+        "rmse": 11.532187,
+        "r2": 0.626663,
+        "smape_pct": 12.578359
+      },
+      "phosphorus_mg_kg": {
+        "mae": 4.880238,
+        "rmse": 5.590837,
+        "r2": 0.427873,
+        "smape_pct": 21.80447
+      },
+      "potassium_mg_kg": {
+        "mae": 9.808692,
+        "rmse": 11.74006,
+        "r2": 0.918508,
+        "smape_pct": 12.734972
+      },
+      "moisture_pct": {
+        "mae": 4.987432,
+        "rmse": 5.856196,
+        "r2": 0.91818,
+        "smape_pct": 7.850447
+      },
+      "temperature_c": {
+        "mae": 2.66964,
+        "rmse": 3.02677,
+        "r2": 0.266047,
+        "smape_pct": 9.435516
+      },
+      "humidity_pct": {
+        "mae": 5.247588,
+        "rmse": 5.904285,
+        "r2": 0.747302,
+        "smape_pct": 7.819382
+      }
+    },
+    "12": {
+      "nitrogen_mg_kg": {
+        "mae": 10.069944,
+        "rmse": 11.585509,
+        "r2": 0.629661,
+        "smape_pct": 12.754875
+      },
+      "phosphorus_mg_kg": {
+        "mae": 4.8857,
+        "rmse": 5.660629,
+        "r2": 0.435106,
+        "smape_pct": 22.015673
+      },
+      "potassium_mg_kg": {
+        "mae": 9.963809,
+        "rmse": 11.827852,
+        "r2": 0.918952,
+        "smape_pct": 12.953915
+      },
+      "moisture_pct": {
+        "mae": 4.934203,
+        "rmse": 5.716112,
+        "r2": 0.921133,
+        "smape_pct": 7.738671
+      },
+      "temperature_c": {
+        "mae": 2.673102,
+        "rmse": 3.018454,
+        "r2": 0.253343,
+        "smape_pct": 9.3311
+      },
+      "humidity_pct": {
+        "mae": 5.111454,
+        "rmse": 5.763552,
+        "r2": 0.753931,
+        "smape_pct": 7.672293
+      }
+    },
+    "24": {
+      "nitrogen_mg_kg": {
+        "mae": 10.163951,
+        "rmse": 11.684114,
+        "r2": 0.637344,
+        "smape_pct": 12.851748
+      },
+      "phosphorus_mg_kg": {
+        "mae": 4.942449,
+        "rmse": 5.73925,
+        "r2": 0.492001,
+        "smape_pct": 22.294573
+      },
+      "potassium_mg_kg": {
+        "mae": 9.710013,
+        "rmse": 11.409369,
+        "r2": 0.924742,
+        "smape_pct": 12.602663
+      },
+      "moisture_pct": {
+        "mae": 4.976418,
+        "rmse": 5.719028,
+        "r2": 0.921464,
+        "smape_pct": 7.911219
+      },
+      "temperature_c": {
+        "mae": 2.828629,
+        "rmse": 3.141406,
+        "r2": 0.258872,
+        "smape_pct": 9.823912
+      },
+      "humidity_pct": {
+        "mae": 5.048069,
+        "rmse": 5.723243,
+        "r2": 0.758363,
+        "smape_pct": 7.607454
+      }
+    },
+    "48": {
+      "nitrogen_mg_kg": {
+        "mae": 9.207644,
+        "rmse": 10.943769,
+        "r2": 0.667571,
+        "smape_pct": 11.585239
+      },
+      "phosphorus_mg_kg": {
+        "mae": 5.099194,
+        "rmse": 5.869606,
+        "r2": 0.462719,
+        "smape_pct": 22.641867
+      },
+      "potassium_mg_kg": {
+        "mae": 9.917665,
+        "rmse": 11.870028,
+        "r2": 0.917232,
+        "smape_pct": 12.564513
+      },
+      "moisture_pct": {
+        "mae": 5.5213,
+        "rmse": 6.226377,
+        "r2": 0.919449,
+        "smape_pct": 8.915657
+      },
+      "temperature_c": {
+        "mae": 2.595644,
+        "rmse": 2.971654,
+        "r2": 0.312343,
+        "smape_pct": 9.069126
+      },
+      "humidity_pct": {
+        "mae": 5.115812,
+        "rmse": 5.887259,
+        "r2": 0.737772,
+        "smape_pct": 7.667878
+      }
+    }
+  },
+  "test_metrics": {
+    "6": {
+      "nitrogen_mg_kg": {
+        "mae": 9.422566,
+        "rmse": 11.013763,
+        "r2": 0.436682,
+        "smape_pct": 12.410312
+      },
+      "phosphorus_mg_kg": {
+        "mae": 5.011753,
+        "rmse": 5.74811,
+        "r2": 0.250825,
+        "smape_pct": 25.988331
+      },
+      "potassium_mg_kg": {
+        "mae": 11.24264,
+        "rmse": 13.484634,
+        "r2": 0.817737,
+        "smape_pct": 10.451119
+      },
+      "moisture_pct": {
+        "mae": 5.206885,
+        "rmse": 6.01545,
+        "r2": 0.831945,
+        "smape_pct": 9.811256
+      },
+      "temperature_c": {
+        "mae": 2.355645,
+        "rmse": 2.80442,
+        "r2": 0.163874,
+        "smape_pct": 7.993779
+      },
+      "humidity_pct": {
+        "mae": 5.309797,
+        "rmse": 6.10099,
+        "r2": 0.54692,
+        "smape_pct": 8.677463
+      }
+    },
+    "12": {
+      "nitrogen_mg_kg": {
+        "mae": 10.144567,
+        "rmse": 11.882184,
+        "r2": 0.481108,
+        "smape_pct": 13.369966
+      },
+      "phosphorus_mg_kg": {
+        "mae": 4.990004,
+        "rmse": 5.702899,
+        "r2": 0.268597,
+        "smape_pct": 24.606669
+      },
+      "potassium_mg_kg": {
+        "mae": 11.301571,
+        "rmse": 13.555265,
+        "r2": 0.825303,
+        "smape_pct": 10.494871
+      },
+      "moisture_pct": {
+        "mae": 4.930174,
+        "rmse": 5.797553,
+        "r2": 0.850607,
+        "smape_pct": 9.275845
+      },
+      "temperature_c": {
+        "mae": 2.483669,
+        "rmse": 2.872107,
+        "r2": 0.078852,
+        "smape_pct": 8.432043
+      },
+      "humidity_pct": {
+        "mae": 5.304408,
+        "rmse": 6.107741,
+        "r2": 0.52967,
+        "smape_pct": 8.58926
+      }
+    },
+    "24": {
+      "nitrogen_mg_kg": {
+        "mae": 9.749329,
+        "rmse": 11.253798,
+        "r2": 0.38542,
+        "smape_pct": 13.403605
+      },
+      "phosphorus_mg_kg": {
+        "mae": 4.848097,
+        "rmse": 5.506176,
+        "r2": 0.214807,
+        "smape_pct": 23.326302
+      },
+      "potassium_mg_kg": {
+        "mae": 11.523346,
+        "rmse": 13.695371,
+        "r2": 0.811154,
+        "smape_pct": 10.511985
+      },
+      "moisture_pct": {
+        "mae": 4.774851,
+        "rmse": 5.53852,
+        "r2": 0.838517,
+        "smape_pct": 9.022796
+      },
+      "temperature_c": {
+        "mae": 2.577317,
+        "rmse": 2.933147,
+        "r2": 0.079291,
+        "smape_pct": 8.709405
+      },
+      "humidity_pct": {
+        "mae": 5.546003,
+        "rmse": 6.304489,
+        "r2": 0.567721,
+        "smape_pct": 8.992805
+      }
+    },
+    "48": {
+      "nitrogen_mg_kg": {
+        "mae": 8.297197,
+        "rmse": 10.01178,
+        "r2": 0.563469,
+        "smape_pct": 11.512754
+      },
+      "phosphorus_mg_kg": {
+        "mae": 5.109735,
+        "rmse": 5.788061,
+        "r2": 0.150451,
+        "smape_pct": 24.207206
+      },
+      "potassium_mg_kg": {
+        "mae": 11.632221,
+        "rmse": 13.590655,
+        "r2": 0.802803,
+        "smape_pct": 11.208121
+      },
+      "moisture_pct": {
+        "mae": 4.524136,
+        "rmse": 5.368972,
+        "r2": 0.866353,
+        "smape_pct": 8.638892
+      },
+      "temperature_c": {
+        "mae": 2.480372,
+        "rmse": 2.827292,
+        "r2": 0.186161,
+        "smape_pct": 8.442467
+      },
+      "humidity_pct": {
+        "mae": 5.192551,
+        "rmse": 5.946139,
+        "r2": 0.562006,
+        "smape_pct": 8.598918
+      }
+    }
+  },
+  "validation_residual_intervals": {
+    "6": {
+      "nitrogen_mg_kg": 17.808388,
+      "phosphorus_mg_kg": 8.655072,
+      "potassium_mg_kg": 18.850914,
+      "moisture_pct": 9.034338,
+      "temperature_c": 4.43893,
+      "humidity_pct": 8.748245
+    },
+    "12": {
+      "nitrogen_mg_kg": 17.581856,
+      "phosphorus_mg_kg": 8.783709,
+      "potassium_mg_kg": 19.121758,
+      "moisture_pct": 9.095295,
+      "temperature_c": 4.398888,
+      "humidity_pct": 8.728384
+    },
+    "24": {
+      "nitrogen_mg_kg": 17.769796,
+      "phosphorus_mg_kg": 8.930969,
+      "potassium_mg_kg": 18.834599,
+      "moisture_pct": 9.16176,
+      "temperature_c": 4.447553,
+      "humidity_pct": 8.733475
+    },
+    "48": {
+      "nitrogen_mg_kg": 17.385218,
+      "phosphorus_mg_kg": 8.829306,
+      "potassium_mg_kg": 19.437588,
+      "moisture_pct": 9.475307,
+      "temperature_c": 4.576354,
+      "humidity_pct": 9.107069
+    }
+  },
+  "residual_interval_coverage": 0.9,
+  "skill_vs_baseline": {
+    "evaluated_on": "held_out_test_windows",
+    "baselines": [
+      "persistence",
+      "window_mean"
+    ],
+    "skill_margin_pct": 5.0,
+    "per_sensor": {
+      "nitrogen_mg_kg": {
+        "lstm_mae": 9.386003,
+        "baseline_mae": {
+          "persistence": 12.23248,
+          "window_mean": 9.537828
+        },
+        "best_baseline": "window_mean",
+        "best_baseline_mae": 9.537828,
+        "improvement_pct": 1.592,
+        "informative": false
+      },
+      "phosphorus_mg_kg": {
+        "lstm_mae": 4.943141,
+        "baseline_mae": {
+          "persistence": 6.551272,
+          "window_mean": 5.038302
+        },
+        "best_baseline": "window_mean",
+        "best_baseline_mae": 5.038302,
+        "improvement_pct": 1.889,
+        "informative": false
+      },
+      "potassium_mg_kg": {
+        "lstm_mae": 12.118976,
+        "baseline_mae": {
+          "persistence": 14.950099,
+          "window_mean": 11.35146
+        },
+        "best_baseline": "window_mean",
+        "best_baseline_mae": 11.35146,
+        "improvement_pct": -6.761,
+        "informative": false
+      },
+      "moisture_pct": {
+        "lstm_mae": 4.823061,
+        "baseline_mae": {
+          "persistence": 6.547282,
+          "window_mean": 4.830926
+        },
+        "best_baseline": "window_mean",
+        "best_baseline_mae": 4.830926,
+        "improvement_pct": 0.163,
+        "informative": false
+      },
+      "temperature_c": {
+        "lstm_mae": 2.507952,
+        "baseline_mae": {
+          "persistence": 3.243726,
+          "window_mean": 2.492632
+        },
+        "best_baseline": "window_mean",
+        "best_baseline_mae": 2.492632,
+        "improvement_pct": -0.615,
+        "informative": false
+      },
+      "humidity_pct": {
+        "lstm_mae": 5.36155,
+        "baseline_mae": {
+          "persistence": 7.118265,
+          "window_mean": 5.324867
+        },
+        "best_baseline": "window_mean",
+        "best_baseline_mae": 5.324867,
+        "improvement_pct": -0.689,
+        "informative": false
+      }
+    }
+  }
+}

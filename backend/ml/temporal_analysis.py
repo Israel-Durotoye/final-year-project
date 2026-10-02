@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 
+from backend.ml import soil_health
 from backend.ml.temporal_data import (
     FEATURE_COLUMNS,
     FEATURE_SHORT_NAMES,
@@ -182,23 +183,51 @@ def _consecutive_duration(
     return count, max(0.0, duration), timestamps[start_index]
 
 
-def _moisture_events(prepared: PreparedTemporalData, metrics: dict[str, Any]) -> list[dict[str, Any]]:
+def moisture_event_thresholds(crop: Any = None) -> tuple[float, float]:
+    """Return (wet, saturation) thresholds for a crop.
+
+    What counts as "too wet" depends on the crop: a flooded paddy is normal for
+    lowland rice and a problem for maize. A crop with a reference profile uses
+    the top of its optimal range as "wet" and its critical maximum as
+    "saturated"; a threshold at or above the sensor's 100 % ceiling disables
+    the event. Unknown crops keep the configured defaults.
+    """
+    try:
+        profile = soil_health.resolve_crop_profile(crop)
+        spec = soil_health.crop_parameters(profile).get("soil_moisture") if profile else None
+    except (FileNotFoundError, ValueError):
+        spec = None
+    if not spec:
+        return MOISTURE_WET_THRESHOLD, MOISTURE_SATURATION_THRESHOLD
+    wet, saturation = float(spec["optimal_max"]), float(spec["critical_max"])
+    return (
+        wet if wet < 100.0 else math.inf,
+        saturation if saturation < 100.0 else math.inf,
+    )
+
+
+def _moisture_events(
+    prepared: PreparedTemporalData,
+    metrics: dict[str, Any],
+    crop: Any = None,
+) -> list[dict[str, Any]]:
     values, _times, timestamps = _series(prepared, "Moisture_%")
     if len(values) < 3:
         return []
+    wet_threshold, saturation_threshold = moisture_event_thresholds(crop)
     events: list[dict[str, Any]] = []
     deltas = [after - before for before, after in zip(values, values[1:])]
     sharp_indices = [index + 1 for index, delta in enumerate(deltas) if delta >= ABRUPT_CHANGE["Moisture_%"]]
     wet_count, wet_hours, wet_started = _consecutive_duration(
         values,
         timestamps,
-        lambda value: value >= MOISTURE_WET_THRESHOLD,
+        lambda value: value >= wet_threshold,
         prepared.median_interval_minutes,
     )
     saturation_count, saturation_hours, saturation_started = _consecutive_duration(
         values,
         timestamps,
-        lambda value: value >= MOISTURE_SATURATION_THRESHOLD,
+        lambda value: value >= saturation_threshold,
         prepared.median_interval_minutes,
     )
 
@@ -235,7 +264,7 @@ def _moisture_events(prepared: PreparedTemporalData, metrics: dict[str, Any]) ->
                 "type": "prolonged_saturation",
                 "started_at": saturation_started,
                 "duration_hours": round(saturation_hours, 3),
-                "threshold_pct": MOISTURE_SATURATION_THRESHOLD,
+                "threshold_pct": saturation_threshold,
                 "likely_cause": "uncertain_water_source",
                 "cause_detail": "rain_or_irrigation_unknown",
                 "cause_confidence": None,
@@ -330,13 +359,16 @@ def _nutrient_step_events(prepared: PreparedTemporalData) -> list[dict[str, Any]
     return events
 
 
-def analyze_history(prepared: PreparedTemporalData) -> dict[str, Any]:
-    """Create historical observations only; this function never forecasts."""
+def analyze_history(prepared: PreparedTemporalData, crop: Any = None) -> dict[str, Any]:
+    """Create historical observations only; this function never forecasts.
+
+    ``crop`` selects crop-appropriate wetness thresholds for moisture events.
+    """
     per_sensor = {
         FEATURE_SHORT_NAMES[feature]: _sensor_metrics(prepared, feature)
         for feature in FEATURE_COLUMNS
     }
-    events = _moisture_events(prepared, per_sensor["moisture"])
+    events = _moisture_events(prepared, per_sensor["moisture"], crop)
     events.extend(_nutrient_step_events(prepared))
 
     observations: list[dict[str, Any]] = []

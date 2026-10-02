@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -21,6 +22,22 @@ def _credentials() -> tuple[str | None, str | None]:
         os.getenv("HARDWARE_SUPABASE_URL") or os.getenv("VITE_HARDWARE_SUPABASE_URL"),
         os.getenv("HARDWARE_SUPABASE_ANON_KEY") or os.getenv("VITE_HARDWARE_SUPABASE_ANON_KEY"),
     )
+
+
+_client_lock = threading.Lock()
+_client: Any | None = None
+_client_credentials: tuple[str, str] | None = None
+
+
+def _get_client() -> Any:
+    """Reuse one hardware-project client instead of building one per request."""
+    global _client, _client_credentials
+    url, key = _credentials()
+    with _client_lock:
+        if _client is None or _client_credentials != (url, key):
+            _client = create_client(url, key)
+            _client_credentials = (url, key)
+        return _client
 
 
 def is_configured() -> bool:
@@ -66,9 +83,8 @@ def fetch_hardware_rows(node_id: str | None = None, *, limit: int = 100) -> list
     if cleaned and cleaned not in HARDWARE_NODE_IDS:
         return []
 
-    url, key = _credentials()
     table = os.getenv("HARDWARE_SUPABASE_TABLE") or os.getenv("VITE_HARDWARE_SUPABASE_TABLE") or DEFAULT_TABLE
-    client: Client = create_client(url, key)
+    client: Client = _get_client()
     query = client.table(table).select("*").in_("Node_ID", sorted(HARDWARE_NODE_IDS))
     if cleaned:
         query = query.eq("Node_ID", cleaned)
@@ -79,4 +95,29 @@ def fetch_hardware_rows(node_id: str | None = None, *, limit: int = 100) -> list
 
 
 def fetch_all_hardware_rows(*, page_size: int = 1000) -> list[dict[str, Any]]:
-    return fetch_hardware_rows(limit=page_size)
+    """Return the complete hardware history using range pagination."""
+    if not is_configured():
+        return []
+    if page_size < 1:
+        raise ValueError("page_size must be at least 1.")
+    table = os.getenv("HARDWARE_SUPABASE_TABLE") or os.getenv("VITE_HARDWARE_SUPABASE_TABLE") or DEFAULT_TABLE
+    client: Client = _get_client()
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        page = (
+            client.table(table)
+            .select("*")
+            .in_("Node_ID", sorted(HARDWARE_NODE_IDS))
+            .order("Timestamp")
+            .range(offset, offset + page_size - 1)
+            .execute()
+            .data
+            or []
+        )
+        rows.extend(normalize_row(row) for row in page if isinstance(row, dict))
+        if len(page) < page_size:
+            break
+        offset += len(page)
+    rows.sort(key=lambda row: str(row.get("Timestamp") or ""))
+    return rows

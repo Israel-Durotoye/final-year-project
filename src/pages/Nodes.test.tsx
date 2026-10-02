@@ -4,11 +4,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_THRESHOLDS, saveAlertThresholds } from "@/lib/alerting";
 import { fetchTelemetry, TelemetryRow } from "@/lib/telemetry";
 import { fetchCropRecommendations } from "@/lib/cropRecommendation";
+import { fetchModelInsights, ModelInsights } from "@/lib/modelInsights";
 import Nodes from "./Nodes";
 
 vi.mock("@/components/layout/PageHeader", () => ({ PageHeader: () => <h1>Nodes</h1> }));
 vi.mock("@/lib/telemetry", () => ({ fetchTelemetry: vi.fn(), latestTelemetryByNode: (rows: TelemetryRow[]) => rows }));
 vi.mock("@/lib/cropRecommendation", async (importOriginal) => ({ ...await importOriginal<typeof import("@/lib/cropRecommendation")>(), fetchCropRecommendations: vi.fn() }));
+
+vi.mock("@/lib/modelInsights", async (importOriginal) => ({ ...await importOriginal<typeof import("@/lib/modelInsights")>(), fetchModelInsights: vi.fn() }));
+
+const normalInsights: ModelInsights = {
+  anomalyStatus: "success", isAnomalous: false, unusualSensors: [], forecastStatus: "success", forecastHorizon: "49m", risks: [],
+};
 
 const row = (id: string, overrides = {}): TelemetryRow => ({
   Node_ID: id, Timestamp: new Date().toISOString(), Data_Source: "hardware",
@@ -20,6 +27,7 @@ beforeEach(() => {
   localStorage.clear();
   vi.mocked(fetchTelemetry).mockResolvedValue([row("NODE_01"), row("NODE_02", { "Moisture_%": 85 }), row("NODE_03", { Data_Source: "simulator", Target_Crop: "Cassava" })]);
   vi.mocked(fetchCropRecommendations).mockImplementation(async (ids) => Object.fromEntries(ids.map((id) => [id, { crop: "Maize", confidence: 0.82, readingsUsed: 24, status: "ready" }])));
+  vi.mocked(fetchModelInsights).mockResolvedValue(normalInsights);
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
@@ -81,6 +89,33 @@ describe("Nodes overview", () => {
     fireEvent.click(refresh);
     expect(await screen.findByText("Maize")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Diagnose Node" })).toHaveAttribute("href", "/ai-doctor");
+  });
+
+  it("shows the anomaly screen and forecast outlook in plain language", async () => {
+    vi.mocked(fetchTelemetry).mockResolvedValue([row("NODE_01"), row("NODE_02")]);
+    vi.mocked(fetchModelInsights).mockImplementation(async (id) => id === "NODE_01" ? normalInsights : {
+      anomalyStatus: "success", isAnomalous: true, unusualSensors: ["humidity"], forecastStatus: "success", forecastHorizon: "49m",
+      risks: [{ sensor: "moisture", direction: "below_reference_range", horizon: "24m", weak: true }],
+    });
+    renderPage();
+    const normal = within(await screen.findByRole("article", { name: "NODE_01" }));
+    expect(await normal.findByText("Normal")).toBeInTheDocument();
+    expect(normal.getByText("No reading expected to leave its range in the next 49 min")).toBeInTheDocument();
+    const flagged = within(screen.getByRole("article", { name: "NODE_02" }));
+    expect(await flagged.findByText("Unusual: humidity")).toBeInTheDocument();
+    expect(flagged.getByText("moisture may go below its range within 24 min")).toBeInTheDocument();
+  });
+
+  it("explains when the forecaster needs more continuous readings", async () => {
+    vi.mocked(fetchTelemetry).mockResolvedValue([row("NODE_01")]);
+    vi.mocked(fetchModelInsights).mockResolvedValue({
+      anomalyStatus: "insufficient_history", isAnomalous: false, unusualSensors: [], forecastStatus: "insufficient_history",
+      forecastHorizon: null, samplesAvailable: 12, samplesRequired: 48, risks: [],
+    });
+    renderPage();
+    const node = within(await screen.findByRole("article", { name: "NODE_01" }));
+    expect(await node.findByText("More readings needed")).toBeInTheDocument();
+    expect(node.getByText("Needs 48 continuous readings (12 so far)")).toBeInTheDocument();
   });
 
   it("labels low-confidence crop predictions as tentative", async () => {

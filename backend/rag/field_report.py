@@ -28,6 +28,13 @@ main finding. Do not invent crops, causes, rainfall, diagnoses or treatment rate
 """
 
 
+LSTM_EVIDENCE_NOTE = (
+    "forecast_risks lists sensors forecast to leave the crop's reference range; "
+    "sensors named under level_estimate_only_sensors are weak evidence. An "
+    "anomaly_screen flag means the sensor pattern is unusual and should be checked; "
+    "it is not a diagnosis. Describe model output in plain words."
+)
+
 FIELD_REPORT_INSTRUCTION = """FIELD REPORT MODE
 Write a professional field assessment of the selected node, approximately 250–400
 words when evidence supports that detail. Use these four Markdown headings:
@@ -49,7 +56,7 @@ Never invent a crop, disease, weather event, trend, treatment rate or watering
 schedule. Do not fill space by repeating readings or advice. No greeting or
 discussion of these instructions. Keep the four sections even with limited data,
 but make the report shorter when there is insufficient evidence.
-"""
+""" + LSTM_EVIDENCE_NOTE + "\n"
 
 REPORT_SECTIONS = (
     ("Overall assessment", "Explain the main finding and its significance in 2–3 sentences. State uncertainty if evidence is limited."),
@@ -88,6 +95,22 @@ def build_report_evidence(snapshot: dict[str, Any], temporal: dict[str, Any], no
         "forecast_status": result.get("forecast_status", "unavailable"),
         "future_estimates": result.get("forecast"),
     }
+    # LSTM findings are added only when a model actually produced them.
+    outlook = result.get("forecast_outlook") or {}
+    if outlook.get("risks"):
+        evidence["forecast_risks"] = outlook["risks"]
+    skill = result.get("forecast_skill") or {}
+    if skill.get("status") == "evaluated":
+        evidence["forecast_reliability"] = {
+            "informative_sensors": skill.get("informative_sensors", []),
+            "level_estimate_only_sensors": skill.get("level_estimate_only_sensors", []),
+        }
+    anomaly = result.get("anomaly_screening") or {}
+    if anomaly.get("status") == "success":
+        evidence["anomaly_screen"] = {
+            key: anomaly.get(key)
+            for key in ("is_anomalous", "severity", "unusual_sensors", "largest_contributors", "interpretation")
+        }
     if node:
         try:
             brief = FarmRecommendationPlanner().build_node_brief(node)
@@ -235,6 +258,14 @@ def render_evidence_report(evidence: dict[str, Any]) -> str:
         monitoring.append("No usable forecast is available; future conditions have not been assessed.")
     else:
         monitoring.append("Model estimates are available but are uncertain; this screening report does not interpret them as confirmed outcomes.")
+    anomaly = evidence.get("anomaly_screen") or {}
+    if anomaly.get("is_anomalous"):
+        sensors = ", ".join(anomaly.get("unusual_sensors") or anomaly.get("largest_contributors") or [])
+        monitoring.append(
+            "The recent sensor pattern looks unusual"
+            + (f" ({sensors})" if sensors else "")
+            + "; check the sensor and the field before acting on these readings."
+        )
     if not node.get("currently_planted_crop"):
         monitoring.append("The planted crop is not recorded, which limits crop-specific interpretation.")
     if not unavailable:

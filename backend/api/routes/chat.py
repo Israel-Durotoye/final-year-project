@@ -2,47 +2,31 @@
 chat.py — Soil Doctor API: RAG Chat Endpoint
 
 Responsibility:
-    Exposes a single POST /chat endpoint that ties together the full
-    RAG pipeline:
+    Exposes POST /chat, which ties together the full pipeline:
 
         Request (ChatRequest)
             ↓
-        rag_engine.hybrid_search(query)     ← retrieves context chunks
+        rag_engine.hybrid_search(question)      ← knowledge for the question
             ↓
-        chat_llm.generate_rag_response()    ← calls AgentRouter/OpenAI-compatible ChatCompletion with grounded prompt
+        chat_llm.generate_rag_response()
+            ├─ live farm snapshot + temporal analysis + LSTM evidence
+            ├─ second knowledge search for the conditions the models found
+            └─ language-model call with provider fallback
             ↓
         Response (ChatResponse)
 
-FastAPI Integration Pattern:
-    This router is NOT self-contained — it depends on a RAGEngine instance
-    that must be initialised once at application startup (model loading takes
-    ~10–30s). The engine is provided via FastAPI's dependency injection system.
+    The engine is created once at application startup and injected with
+    set_engine(); see backend/main.py.
 
-    In main.py:
-        from contextlib import asynccontextmanager
-        from backend.rag.rag_engine import RAGEngine
-        from backend.api.routes import chat as chat_router
-
-        engine = RAGEngine()
-
-        @asynccontextmanager
-        async def lifespan(app: FastAPI):
-            engine.initialize()          # Runs once on startup
-            chat_router.set_engine(engine)
-            yield
-            engine.shutdown()            # Runs once on shutdown
-
-        app = FastAPI(lifespan=lifespan)
-        app.include_router(chat_router.router, prefix="/api/v1")
-
-CORS:
-    This router does not configure CORS — that belongs on the FastAPI app
-    in main.py, since the React frontend will need CORS headers on all routes.
+Concurrency:
+    The chat endpoint is a plain ``def`` so FastAPI runs it in a worker thread.
+    Retrieval, telemetry queries and the language-model call are all blocking;
+    running them on the event loop would freeze every other request.
 
 Error Handling Strategy:
-    HTTP 400  — invalid/empty query from the client
+    HTTP 400  — invalid request (for example a field report without a node)
     HTTP 503  — RAGEngine not yet initialised (app is still starting up)
-    HTTP 500  — internal error (Gemini API failure, unexpected exception)
+    HTTP 500  — internal error (provider failure, unexpected exception)
     All errors return a structured JSON body: {"detail": "<message>"}
 """
 
@@ -89,6 +73,9 @@ _CONVERSATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 # Keep room for the current user message and the generated assistant reply when
 # a conversation is saved, while staying within ChatRequest.history's limit.
 _MAX_STORED_HISTORY_MESSAGES = 48
+# A full field report is longer than a chat turn; stored answers must still be
+# accepted when the history is loaded or sent back by the client.
+_MAX_MESSAGE_CHARS = 16000
 
 
 def _validate_conversation_id(conversation_id: str) -> str:
@@ -126,8 +113,8 @@ def _load_conversation_history(conversation_id: str) -> list[dict[str, str]]:
             continue
         role = msg.get("role")
         content = msg.get("content")
-        if role in {"user", "assistant"} and isinstance(content, str):
-            validated.append({"role": role, "content": content})
+        if role in {"user", "assistant"} and isinstance(content, str) and content.strip():
+            validated.append({"role": role, "content": content[:_MAX_MESSAGE_CHARS]})
     # Conversation files can outlive changes to the API limits.  Trim here so
     # existing oversized files cannot make subsequent chat requests invalid or
     # grow without bound after they are saved again.
@@ -193,7 +180,7 @@ class ChatMessage(BaseModel):
     content: str = Field(
         ...,
         min_length=1,
-        max_length=4000,
+        max_length=_MAX_MESSAGE_CHARS,
         description="The text content of a single conversation turn.",
     )
 
@@ -219,7 +206,7 @@ class ChatRequest(BaseModel):
     )
     history: list[ChatMessage] = Field(
         default_factory=list,
-        max_items=50,
+        max_length=50,
         description="Recent prior conversation turns to preserve context.",
     )
     conversation_id: str | None = Field(
@@ -276,8 +263,8 @@ class ChatResponse(BaseModel):
         sources         : Documents the answer was grounded in.
         chunks_used     : Number of retrieved chunks provided to the model.
         grounded        : False if the knowledge base had no relevant context.
-        generation_time : Seconds the Gemini API call took.
-        model           : Gemini model identifier used.
+        generation_time : Seconds spent producing the answer.
+        model           : Identifier of the model that produced the answer.
     """
     answer: str = Field(..., description="The AI-generated agronomic answer.")
     sources: list[SourceReference] = Field(
@@ -360,7 +347,7 @@ async def get_chat_history(conversation_id: str) -> ChatHistoryResponse:
     summary="Ask the Soil Doctor a question",
     response_description="AI-generated agronomic answer grounded in the knowledge base.",
 )
-async def post_chat(request: ChatRequest) -> ChatResponse:
+def post_chat(request: ChatRequest) -> ChatResponse:
     """
     Execute the full RAG pipeline for a single conversational turn.
 
@@ -368,8 +355,10 @@ async def post_chat(request: ChatRequest) -> ChatResponse:
     1. Validate and sanitise the incoming query (Pydantic, runs first).
     2. Check the RAG engine is ready (HTTP 503 if not).
     3. Run hybrid search (dense + sparse + rerank) over the knowledge base.
-    4. Pass retrieved chunks to Gemini with a grounding-enforced system prompt.
-    5. Return the structured ChatResponse.
+    4. Add live readings, temporal analysis and LSTM evidence, and search the
+       knowledge base again for the conditions that evidence describes.
+    5. Generate the answer with a grounding-enforced system prompt.
+    6. Return the structured ChatResponse.
 
     **Anti-hallucination guarantee:**
     The generation layer's system instruction explicitly forbids the model
@@ -421,7 +410,13 @@ async def post_chat(request: ChatRequest) -> ChatResponse:
             conversation_history=conversation_history,
             node_id=request.node_id.strip() if request.node_id else None,
             response_mode=request.response_mode,
+            retriever=lambda text: engine.hybrid_search(text, top_k=request.top_k),
         )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     except EnvironmentError as exc:
         # Missing provider keys — configuration problem, not a client error
         logger.error("LLM API key error in generate_rag_response: %s", exc)
@@ -452,13 +447,14 @@ async def post_chat(request: ChatRequest) -> ChatResponse:
     )
 
     if request.conversation_id:
-        persisted_messages = conversation_history + [
+        persisted_messages = (conversation_history + [
             {"role": "user", "content": query},
             {"role": "assistant", "content": rag_result.answer},
-        ]
+        ])[-_MAX_STORED_HISTORY_MESSAGES:]
         try:
             _save_conversation_history(request.conversation_id, persisted_messages)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
+            # A failed save must not discard an answer that was generated.
             logger.warning("Skipping conversation-store save: %s", exc)
 
     logger.info(

@@ -22,6 +22,25 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 
+def _parse_timestamp(value: str) -> datetime | None:
+    """Parse ISO-like timestamps, including fractional seconds and offsets."""
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    try:
+        return datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    # Python 3.10's fromisoformat rejects some fraction lengths; drop them.
+    trimmed = cleaned.replace("T", " ").split("+")[0].split("Z")[0].split(".")[0]
+    for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(trimmed, pattern)
+        except ValueError:
+            continue
+    return None
+
+
 def get_nigerian_season(timestamp: datetime | str | None = None) -> str:
     """
     Return the current Nigerian agricultural season label.
@@ -40,15 +59,7 @@ def get_nigerian_season(timestamp: datetime | str | None = None) -> str:
     if timestamp is None:
         dt = datetime.now(timezone.utc)
     elif isinstance(timestamp, str):
-        # Accept common ISO formats with or without timezone
-        cleaned = timestamp.strip().replace("T", " ").split("+")[0].split("Z")[0]
-        try:
-            dt = datetime.strptime(cleaned, "%Y-%m-%d %H:%M:%S")
-        except ValueError:
-            try:
-                dt = datetime.strptime(cleaned, "%Y-%m-%d")
-            except ValueError:
-                dt = datetime.now(timezone.utc)
+        dt = _parse_timestamp(timestamp) or datetime.now(timezone.utc)
     elif isinstance(timestamp, datetime):
         dt = timestamp
     else:

@@ -51,7 +51,8 @@ const DataTable = () => {
     setTraining(true);
     toast.info("LSTM anomaly model training started in background.");
     try {
-      const response = await fetch("http://localhost:8000/api/v1/ml/train-anomaly-model", {
+      const apiBase = import.meta.env.VITE_API_BASE ?? "http://localhost:8000/api/v1";
+      const response = await fetch(`${apiBase}/ml/train-anomaly-model`, {
         method: "POST",
       });
       if (!response.ok) {

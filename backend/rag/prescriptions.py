@@ -10,6 +10,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from backend.ml import soil_health
 from backend.prescriptive.evaluator import ThresholdEvaluator
 from backend.rag import diagnostics, thresholds
 
@@ -498,12 +499,6 @@ class FarmRecommendationPlanner:
     }
 
     _NUTRIENTS = {"Nitrogen", "Phosphorus", "Potassium"}
-    _CROP_PROFILE_ALIASES = {
-        "maize": "maize_corn",
-        "corn": "maize_corn",
-        "maize corn": "maize_corn",
-        "maize/corn": "maize_corn",
-    }
     _PROFILE_PARAMETER_KEYS = {
         "pH": "soil_ph",
         "Nitrogen": "nitrogen_ppm",
@@ -593,8 +588,10 @@ class FarmRecommendationPlanner:
         return None
 
     def _crop_profile_for(self, crop: Any) -> str | None:
-        normalized = " ".join(str(crop or "").strip().casefold().split())
-        return self._CROP_PROFILE_ALIASES.get(normalized)
+        try:
+            return soil_health.resolve_crop_profile(crop)
+        except (FileNotFoundError, ValueError):
+            return None
 
     def _diagnose_node(
         self,
@@ -632,10 +629,13 @@ class FarmRecommendationPlanner:
             if profile_key is None:
                 continue
 
-            schema = self._crop_threshold_evaluator.get_parameter_schema(
-                profile_key,
-                crop_profile,
-            )
+            try:
+                schema = self._crop_threshold_evaluator.get_parameter_schema(
+                    profile_key,
+                    crop_profile,
+                )
+            except KeyError:
+                continue  # This crop profile does not define the parameter.
             optimal_low = float(schema["optimal_min"])
             optimal_high = float(schema["optimal_max"])
             critical_low = float(schema["critical_min"])

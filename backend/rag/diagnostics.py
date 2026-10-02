@@ -66,7 +66,7 @@ class SoilDiagnosticEngine:
         self.nutrient_n = thresholds.NITROGEN
         self.nutrient_p = thresholds.PHOSPHORUS
         self.nutrient_k = thresholds.POTASSIUM
-        self.moisture_threshold = thresholds.MOISTURE_SANDY
+        self.moisture_threshold = thresholds.MOISTURE_SENSOR_PERCENT
         self.temperature_threshold = thresholds.TEMPERATURE_WARM_SEASON
         self.salinity_threshold = thresholds.SALINITY_GENERAL
         self.organic_matter_threshold = thresholds.ORGANIC_MATTER

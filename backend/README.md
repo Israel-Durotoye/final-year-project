@@ -1,50 +1,126 @@
 # Soil Doctor - Backend
 
-This folder contains a minimal FastAPI wrapper around the project's `ThresholdEvaluator`.
+FastAPI service that turns sensor telemetry into farm advice. It combines three
+LSTM models with a retrieval-augmented (RAG) chat assistant.
 
-Quick start (local development):
+## Quick start
 
-1. Create a virtual environment and activate it (recommended):
+1. Create and activate an environment, then install dependencies:
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install -r backend/requirements.txt
+   ```
+
+2. Copy `.env.example` to `.env` in the project root and fill in the Supabase
+   values and at least one language-model key.
+
+3. Build the knowledge store once (reads `rag_import/agronomic_knowledge.jsonl`,
+   writes `backend/data/agronomic_knowledge/`):
+
+   ```bash
+   python -m backend.scripts.ingest_agronomic_knowledge
+   ```
+
+4. Run the server from the project root:
+
+   ```bash
+   uvicorn backend.main:app --port 8000
+   ```
+
+5. Check that everything is ready:
+
+   ```bash
+   curl http://localhost:8000/health
+   ```
+
+`status` is `ready` once the retrieval models are loaded, and `models` shows
+which LSTM models are deployed.
+
+## How a chat request flows
+
+```text
+question ──► hybrid search (dense + BM25 → RRF → cross-encoder rerank)
+        │
+        ├──► telemetry gateway (one cached read per node)
+        │       ├─ live farm snapshot (latest reading per node)
+        │       └─ temporal analysis (trends, events, data quality)
+        │
+        ├──► LSTM models
+        │       ├─ forecaster      → future estimates + reliability per sensor
+        │       ├─ anomaly screen  → is the newest window unusual, which sensors
+        │       └─ crop model      → recommended crop for the node
+        │
+        ├──► condition-aware search: the knowledge base is searched again for
+        │    what the rules and models found (e.g. "rice low moisture ...")
+        │
+        └──► language model (AgentRouter → Conduit → local model fallback)
 ```
 
-2.Install dependencies:
+The LSTM output reaches the language model as its own `LSTM MODEL EVIDENCE`
+prompt block and also decides what agronomic knowledge is retrieved.
+
+## API
+
+| Route | Purpose |
+| --- | --- |
+| `GET /health` | Readiness of retrieval and each LSTM model |
+| `POST /api/v1/chat/` | Ask Soil Doctor (`response_mode`: `chat`, `widget`, `field_report`, `field_summary`) |
+| `GET /api/v1/chat/history/{conversation_id}` | Saved conversation |
+| `GET /api/v1/ml/status` | Deployed models with their training metrics |
+| `GET /api/v1/ml/temporal/{node_id}` | History analysis, forecast, forecast outlook and anomaly screen |
+| `POST /api/v1/ml/classify-suitability` | Crop recommendation and threshold verdict |
+| `POST /api/v1/ml/train-temporal-forecaster` | Retrain the forecaster (background) |
+| `POST /api/v1/ml/train-anomaly-model` | Retrain and recalibrate the anomaly screen (background) |
+| `GET /api/v1/ml/training-status` | Whether a training job is running, succeeded or failed |
+| `POST /evaluate` | Score readings against a crop's reference ranges |
+
+Interactive documentation is at `http://localhost:8000/docs`.
+
+## LSTM models
+
+| Model | Input | Output | Files |
+| --- | --- | --- | --- |
+| Forecaster | 48 consecutive readings, 6 sensors | next 48 readings with 90% intervals | `ml/model_artifacts/temporal_forecaster/` |
+| Anomaly screen | newest 24 readings | reconstruction error vs calibrated threshold | `ml/lstm_anomaly_model.keras`, `ml/scaler_anomaly.pkl`, `ml/anomaly_metadata.json` |
+| Crop recommendation | newest 24 readings | one of 7 crops with a model score | `ml/lstm_crop_model.keras`, `ml/scaler_crop.pkl`, `ml/imputer_crop.pkl` |
+
+Train from the command line (project root):
 
 ```bash
-pip install -r requirements.txt
+python -m backend.ml.train_lstm_forecaster
+python -m backend.ml.lstm_anomaly_trainer
 ```
 
-3.Rebuild the live agronomic knowledge store from the canonical JSONL dataset:
+Both split the data in time order, fit the scaler on training rows only, and
+record held-out metrics in a metadata file. The forecaster also records how it
+compares with two naive baselines; a sensor is treated as *informative* only when
+the LSTM beats the better baseline by a margin. See
+[`ml/model_artifacts/README.md`](ml/model_artifacts/README.md).
 
-```bash
-python -m backend.scripts.ingest_agronomic_knowledge
-```
+## Telemetry sources
 
-The importer reads `rag_import/agronomic_knowledge.jsonl`, embeds each
-`knowledge_text` value with the backend's configured embedding model, uses
-`fact_id` as the Chroma document ID, and writes only runtime artifacts to
-`backend/data/agronomic_knowledge/`. The prebuilt `rag_import/chroma_db` is not
-used.
+`backend/ml/node_data.py` is the only module that reads telemetry.
 
-4.Run the dev server (uvicorn):
+- `NODE_01`–`NODE_03` are physical nodes. They are read from the hardware
+  Supabase project when it is configured; otherwise `NODE_01`/`NODE_02` come
+  from the gateway's Firebase log and `NODE_03` is reported as unavailable.
+- Every other node is read from the simulator Supabase table.
 
-```bash
-uvicorn backend.main:app --reload --port 8000
-```
+Readings are cached for `TELEMETRY_CACHE_SECONDS` (default 20), so one chat
+request makes about three network reads instead of one per node per feature.
 
-### LLM provider fallback
+## LLM provider fallback
 
-AgentRouter remains the primary provider. Each remote provider gets three
-attempts for rate limits, timeouts, connection failures, and upstream 5xx
-errors. Configure Conduit as the second provider; an in-process Transformers
-model is the final fallback and does not call an external API:
+AgentRouter is the primary provider. Each remote provider gets three attempts
+for rate limits, timeouts, connection failures and upstream 5xx errors. Conduit
+is the second provider; an in-process Transformers model is the final fallback
+and does not call an external API:
 
 ```dotenv
 AGENTROUTER_API_KEY=your-agentrouter-key
-AGENTROUTER_MODEL=gpt-5.6-sol
+AGENTROUTER_MODEL=deepseek-v4-flash
 
 CONDUIT_API_KEY=sk-cdt-your-key
 CONDUIT_API_BASE_URL=https://conduit.ozdoev.net/v1
@@ -57,44 +133,28 @@ LOCAL_LLM_DEVICE=cpu
 LOCAL_LLM_LOCAL_FILES_ONLY=true
 ```
 
-Authentication and invalid-request errors do not trigger fallback. The existing
-chat response contract is unchanged; its `model` field contains the model that
-actually produced the final answer.
+Authentication and invalid-request errors do not trigger fallback. The chat
+response's `model` field names the model that produced the final answer.
+Download `LOCAL_LLM_MODEL` once (set `LOCAL_LLM_LOCAL_FILES_ONLY=false` for that
+first run) before relying on the offline fallback.
 
-Download `LOCAL_LLM_MODEL` once before enabling offline-only mode. The local
-model is loaded lazily on the first fallback request and then retained in
-memory. Set `LOCAL_LLM_LOCAL_FILES_ONLY=false` for that initial download, then
-restore it to `true`.
+## Screening ranges
 
-5.Example request (curl):
+Crop reference ranges live in `optimal_thresholds.json` (project root, with an
+optional local override in `backend/data/`). Profiles exist for maize, rice and
+cassava. The rice and cassava profiles are provisional: they follow the
+project's reference crop profiles and should be confirmed against local
+agronomic guidance. A node whose crop has no profile is screened with generic
+ranges on the sensor's own 0–100 % moisture scale.
+
+## Tests
 
 ```bash
-curl -X POST http://localhost:8000/evaluate \
-  -H 'Content-Type: application/json' \
-  -d '{"telemetry": {"nitrogen_ppm": 18, "phosphorus_ppm": 42, "potassium_ppm": 180, "soil_moisture": 32, "ambient_humidity": 64, "ambient_temperature": 24.5}}'
+python -m pytest backend/tests -q
 ```
 
-## Temporal farm intelligence
+## Notes
 
-Soil Doctor automatically fetches the latest 100 chronological readings for a
-selected node (or each active node for a farm-wide analysis), audits timestamp
-gaps/duplicates/missing values, detects historical trends and events, and adds
-that evidence to the RAG prompt separately from the live snapshot and future
-forecast.
-
-The active model objective is multivariate forecasting of the six production
-measurements in this exact order:
-
-```text
-Nitrogen_mg_k, Phosphorus_m, Potassium_mg_, Moisture_%, Temperature_C, Humidity_%
-```
-
-Legacy crop-suitability and moisture-only endpoints/files remain for backwards
-compatibility, but they are no longer used by Soil Doctor's automatic reasoning
-or AgentRouter tool path. See
-[`backend/ml/model_artifacts/README.md`](ml/model_artifacts/README.md) for model
-status, training, backtesting, artifact locations, and configuration.
-
-Notes:
--The service reads `optimal_thresholds.json` from the project root by default.
--CORS is permissive for local development; tighten this for production.
+- CORS allows `localhost` and `127.0.0.1` on ports 8080 and 5173. Set
+  `CORS_ALLOW_ORIGINS` for any other address.
+- Restart the backend after changing `.env`.

@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 
 from backend.ml import lstm_forecaster
-from backend.ml.temporal_data import FEATURE_COLUMNS, complete_feature_matrix
+from backend.ml.temporal_data import FEATURE_COLUMNS, feature_matrix_with_gaps
 from backend.ml.train_lstm_forecaster import (
     _inverse,
     evaluate_forecast,
@@ -33,21 +33,18 @@ def backtest(rows: list[dict[str, Any]], stride: int = 1) -> dict[str, Any]:
     predicted_windows: list[np.ndarray] = []
     cutoffs: list[dict[str, Any]] = []
 
+    input_windows: list[np.ndarray] = []
     for node_id, segments in segments_by_node.items():
         for segment in segments:
-            matrix = complete_feature_matrix(segment)
-            if not matrix:
-                continue
-            values = np.asarray(matrix, dtype=np.float32)
+            values = np.asarray(feature_matrix_with_gaps(segment), dtype=np.float32)
             for target_start in range(sequence_length, len(values) - forecast_steps + 1, max(1, stride)):
                 # No row after target_start - 1 is present in the model input.
                 inputs = values[target_start - sequence_length : target_start]
                 actual = values[target_start : target_start + forecast_steps]
-                scaled_input = scaler.transform(inputs).reshape(1, sequence_length, len(FEATURE_COLUMNS))
-                scaled_prediction = np.asarray(model.predict(scaled_input, verbose=0))
-                prediction = _inverse(scaler, scaled_prediction)[0]
+                if not (np.isfinite(inputs).all() and np.isfinite(actual).all()):
+                    continue
+                input_windows.append(scaler.transform(inputs))
                 actual_windows.append(actual)
-                predicted_windows.append(prediction)
                 cutoffs.append(
                     {
                         "node_id": node_id,
@@ -56,6 +53,12 @@ def backtest(rows: list[dict[str, Any]], stride: int = 1) -> dict[str, Any]:
                         "last_target": segment[target_start + forecast_steps - 1]["Timestamp"],
                     }
                 )
+
+    if input_windows:
+        scaled_predictions = lstm_forecaster.predict_scaled(
+            model, np.asarray(input_windows, dtype=np.float32), metadata
+        )
+        predicted_windows = list(_inverse(scaler, scaled_predictions))
 
     if not actual_windows:
         raise ValueError("No eligible walk-forward backtest windows are available.")

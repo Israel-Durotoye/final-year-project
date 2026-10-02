@@ -84,7 +84,16 @@ DEFAULT_CROP_KEY: str = "maize_corn"
 # ---------------------------------------------------------------------------
 
 _ML_DIR = pathlib.Path(__file__).parent.resolve()
-_THRESHOLDS_PATH = _ML_DIR.parent / "data" / "optimal_thresholds.json"
+# backend/data/ is not version-controlled, so a fresh clone only has the copy in
+# the project root. Use the same search order as ThresholdEvaluator.
+_THRESHOLDS_CANDIDATES = (
+    _ML_DIR.parent / "data" / "optimal_thresholds.json",
+    _ML_DIR.parent.parent / "optimal_thresholds.json",
+)
+_THRESHOLDS_PATH = next(
+    (path for path in _THRESHOLDS_CANDIDATES if path.exists()),
+    _THRESHOLDS_CANDIDATES[0],
+)
 
 _profiles_cache: Optional[dict[str, Any]] = None
 _unknown_crops_seen: set[str] = set()
@@ -127,7 +136,33 @@ _CROP_ALIASES: dict[str, str] = {
     "corn": "maize_corn",
     "maize_corn": "maize_corn",
     "maize/corn": "maize_corn",
+    "rice": "rice",
+    "paddy": "rice",
+    "paddy_rice": "rice",
+    "lowland_rice": "rice",
+    "cassava": "cassava",
+    "manioc": "cassava",
 }
+
+
+def resolve_crop_profile(target_crop: Optional[str]) -> Optional[str]:
+    """Return the threshold profile key for a crop, or None when none exists."""
+
+    profiles = _load_profiles()
+    raw = " ".join(str(target_crop or "").strip().lower().split())
+    if not raw:
+        return None
+    collapsed = raw.replace("/", "_").replace(" ", "_").replace("-", "_")
+    for candidate in (raw, collapsed, _CROP_ALIASES.get(raw), _CROP_ALIASES.get(collapsed)):
+        if candidate and candidate in profiles:
+            return candidate
+    return None
+
+
+def crop_parameters(profile_key: str) -> dict[str, Any]:
+    """Return the parameter specifications of one crop profile."""
+
+    return _load_profiles().get(profile_key, {}).get("parameters", {})
 
 
 def normalize_crop(target_crop: Optional[str]) -> str:
@@ -144,20 +179,9 @@ def normalize_crop(target_crop: Optional[str]) -> str:
     if not raw:
         return DEFAULT_CROP_KEY if DEFAULT_CROP_KEY in profiles else next(iter(profiles))
 
-    # Direct profile-key match.
-    if raw in profiles:
-        return raw
-
-    # Alias match.
-    if raw in _CROP_ALIASES and _CROP_ALIASES[raw] in profiles:
-        return _CROP_ALIASES[raw]
-
-    # Loose match: normalise separators (e.g. "sweet corn" -> "sweet_corn").
-    collapsed = raw.replace("/", "_").replace(" ", "_").replace("-", "_")
-    if collapsed in profiles:
-        return collapsed
-    if collapsed in _CROP_ALIASES and _CROP_ALIASES[collapsed] in profiles:
-        return _CROP_ALIASES[collapsed]
+    resolved = resolve_crop_profile(target_crop)
+    if resolved is not None:
+        return resolved
 
     fallback = DEFAULT_CROP_KEY if DEFAULT_CROP_KEY in profiles else next(iter(profiles))
 

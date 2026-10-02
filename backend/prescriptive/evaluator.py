@@ -238,7 +238,8 @@ class ThresholdEvaluator:
 
             # -- Handle missing sensor data ---------------------------------
             if param_key not in telemetry or telemetry[param_key] is None:
-                logger.warning("Parameter '%s' not found in telemetry payload.", param_key)
+                # Expected for parameters the sensor suite does not measure.
+                logger.debug("Parameter '%s' not found in telemetry payload.", param_key)
                 report.missing_parameters.append(display_name)
                 # Missing params contribute 0 score — penalizes incomplete data
                 total_weight_used += weight_map.get(param_key, 0.0)

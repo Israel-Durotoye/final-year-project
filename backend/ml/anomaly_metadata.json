@@ -1,0 +1,51 @@
+{
+  "model_name": "lstm_autoencoder_anomaly_screen",
+  "task": "reconstruction_error_anomaly_screening",
+  "trained_at": "2026-10-02T12:36:19.801577+00:00",
+  "feature_order": [
+    "Nitrogen_mg_k",
+    "Phosphorus_m",
+    "Potassium_mg_",
+    "Moisture_%",
+    "Temperature_C",
+    "Humidity_%"
+  ],
+  "sequence_length": 24,
+  "error_metric": "mean_absolute_error_in_minmax_scaled_units",
+  "scaler_fit_scope": "training_rows_only",
+  "chronological_split": {
+    "train": 0.8,
+    "validation": 0.2
+  },
+  "window_counts": {
+    "train": 2808,
+    "validation": 900
+  },
+  "nodes": [
+    "NODE_01",
+    "NODE_02",
+    "NODE_03",
+    "NODE_04",
+    "NODE_05",
+    "NODE_06",
+    "NODE_07"
+  ],
+  "threshold_quantile": 0.99,
+  "threshold": 0.14958,
+  "feature_thresholds": {
+    "nitrogen": 0.174351,
+    "phosphorus": 0.208917,
+    "potassium": 0.126009,
+    "moisture": 0.100108,
+    "temperature": 0.24855,
+    "humidity": 0.158062
+  },
+  "train_reconstruction_mae": 0.131303,
+  "validation_reconstruction_mae": 0.131981,
+  "validation_error_quantiles": {
+    "0.5": 0.132151,
+    "0.9": 0.143274,
+    "0.95": 0.146009,
+    "0.99": 0.14958
+  }
+}

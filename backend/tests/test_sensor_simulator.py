@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import math
 import unittest
-from datetime import datetime
+import random
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -69,6 +70,53 @@ class SensorSimulatorTests(unittest.TestCase):
             )
             self.assertEqual(sensor_simulator.NODES[node_id]["lat"], coordinate["lat"])
             self.assertEqual(sensor_simulator.NODES[node_id]["lng"], coordinate["lng"])
+
+    def _simulate(self, minutes: int, seed: int = 7) -> dict[str, list[dict]]:
+        sensor_simulator.reset_node_states()
+        self.addCleanup(sensor_simulator.reset_node_states)
+        rng = random.Random(seed)
+        start = datetime(2026, 9, 1, 6, 0, 0)
+        series: dict[str, list[dict]] = {node: [] for node in sensor_simulator.SIMULATED_NODE_IDS}
+        for minute in range(minutes):
+            for row in sensor_simulator.build_telemetry_batch(start + timedelta(minutes=minute), rng):
+                series[row["Node_ID"]].append(row)
+        return series
+
+    def test_consecutive_readings_continue_from_each_other(self) -> None:
+        series = self._simulate(240)
+        for node_id, rows in series.items():
+            temperatures = [row["Temperature_C"] for row in rows]
+            steps = [abs(b - a) for a, b in zip(temperatures, temperatures[1:])]
+            # Independent random draws would differ by several degrees a minute.
+            self.assertLess(max(steps), 1.5, node_id)
+            nitrogen = [row["Nitrogen_mg_k"] for row in rows]
+            self.assertLess(max(abs(b - a) for a, b in zip(nitrogen, nitrogen[1:])), 6.0, node_id)
+
+    def test_readings_stay_near_the_crop_reference_range(self) -> None:
+        series = self._simulate(24 * 60)
+        for node_id, rows in series.items():
+            profile = sensor_simulator.CROP_PROFILES[sensor_simulator.NODES[node_id]["crop"]]
+            for column, key, slack in (
+                ("Moisture_%", "moisture", 3.0),
+                ("Temperature_C", "temp", 0.0),
+                ("Humidity_%", "humidity", 0.0),
+                ("Nitrogen_mg_k", "n", 0.0),
+                ("Phosphorus_m", "p", 0.0),
+                ("Potassium_mg_", "k", 0.0),
+            ):
+                low, high = profile[key]
+                values = [row[column] for row in rows]
+                self.assertGreaterEqual(min(values), low - slack - 0.05, (node_id, column))
+                self.assertLessEqual(max(values), high + 0.05, (node_id, column))
+
+    def test_moisture_dries_and_is_replenished(self) -> None:
+        series = self._simulate(24 * 60)
+        for node_id, rows in series.items():
+            moisture = [row["Moisture_%"] for row in rows]
+            changes = [b - a for a, b in zip(moisture, moisture[1:])]
+            # Drying is the normal direction; wetting arrives as occasional jumps.
+            self.assertGreater(sum(change < 0 for change in changes), 2 * sum(change > 0 for change in changes), node_id)
+            self.assertGreaterEqual(max(changes), 5.0, node_id)
 
     @patch("sensor_simulator.telemetry_batch_exists", return_value=False)
     def test_transport_error_is_retried_with_backoff(self, _exists: MagicMock) -> None:
