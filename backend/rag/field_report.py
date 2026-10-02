@@ -66,6 +66,32 @@ REPORT_SECTIONS = (
 )
 
 
+def compact_forecast(forecast: Any) -> Any:
+    """Keep each estimate and its interval; drop text repeated for every value."""
+    if not isinstance(forecast, dict):
+        return forecast
+    compact: dict[str, Any] = {}
+    for horizon, point in forecast.items():
+        if not isinstance(point, dict):
+            compact[horizon] = point
+            continue
+        entry: dict[str, Any] = {}
+        for sensor, value in point.items():
+            if not isinstance(value, dict):
+                continue  # horizon_steps / horizon_minutes duplicate the label
+            interval = value.get("prediction_interval") or {}
+            estimate = {"predicted": value.get("predicted")}
+            if interval:
+                estimate["low"] = interval.get("lower")
+                estimate["high"] = interval.get("upper")
+            entry[sensor] = {
+                key: round(number, 1) if isinstance(number, float) else number
+                for key, number in estimate.items()
+            }
+        compact[horizon] = entry
+    return compact
+
+
 def build_report_evidence(snapshot: dict[str, Any], temporal: dict[str, Any], node_id: str) -> dict[str, Any]:
     """Keep unrelated nodes and verbose model metadata out of the report input."""
     node = next((item for item in snapshot.get("nodes", [])
@@ -93,7 +119,7 @@ def build_report_evidence(snapshot: dict[str, Any], temporal: dict[str, Any], no
         },
         "observed_history": result.get("historical_analysis") or {"status": "unavailable"},
         "forecast_status": result.get("forecast_status", "unavailable"),
-        "future_estimates": result.get("forecast"),
+        "future_estimates": compact_forecast(result.get("forecast")),
     }
     # LSTM findings are added only when a model actually produced them.
     outlook = result.get("forecast_outlook") or {}

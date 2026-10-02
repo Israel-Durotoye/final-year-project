@@ -56,6 +56,7 @@ from backend.rag.field_report import (
     render_evidence_report, usable_local_report,
     EVIDENCE_REPORT_NOTE,
     FIELD_SUMMARY_INSTRUCTION, normalize_field_summary, render_field_summary,
+    compact_forecast as _compact_forecast,
 )
 from backend.utils.season import get_nigerian_season
 
@@ -136,6 +137,15 @@ LOCAL_LLM_MAX_OUTPUT_TOKENS = max(
 MAX_CONTEXT_TOKENS = 4096 - 512 - DEFAULT_MAX_TOKENS
 
 API_RETRIES = 3
+# Extra attempts on one provider when its reply is empty or cut short, and the
+# larger output budget used for that retry.
+EMPTY_REPLY_RETRIES = 1
+RETRY_OUTPUT_BUDGET_FACTOR = 3
+MIN_RETRY_OUTPUT_TOKENS = 2048
+MAX_RETRY_OUTPUT_TOKENS = 4096
+# After a provider exhausts its retries it is skipped for this long, so an
+# outage costs one slow request instead of slowing every request.
+PROVIDER_COOLDOWN_SECONDS = float(os.getenv("LLM_PROVIDER_COOLDOWN_SECONDS", "120"))
 API_INITIAL_BACKOFF = 1.0
 API_MAX_BACKOFF = 16.0
 API_BACKOFF_MULTIPLIER = 2.0
@@ -971,6 +981,14 @@ def _call_llm_with_retry(
     )
 
 
+_provider_cooldowns: dict[str, float] = {}
+
+
+def reset_provider_cooldowns() -> None:
+    """Forget which providers are being skipped (used by tests)."""
+    _provider_cooldowns.clear()
+
+
 def _call_with_provider_fallback(
     providers: list[_LLMProvider],
     messages: list[dict[str, Any]],
@@ -985,6 +1003,10 @@ def _call_with_provider_fallback(
     last_error: Exception | None = None
     for index in range(active_index, len(providers)):
         provider = providers[index]
+        has_fallback = index + 1 < len(providers)
+        if has_fallback and time.monotonic() < _provider_cooldowns.get(provider.name, 0.0):
+            logger.info("%s failed recently; skipping it for this request.", provider.name)
+            continue
         try:
             response = _call_llm_with_retry(
                 provider.client,
@@ -997,10 +1019,10 @@ def _call_with_provider_fallback(
             return response, index
         except Exception as exc:
             last_error = exc
-            has_fallback = index + 1 < len(providers)
             retryable = _is_retryable_provider_error(exc)
             if not has_fallback or not retryable:
                 raise
+            _provider_cooldowns[provider.name] = time.monotonic() + PROVIDER_COOLDOWN_SECONDS
             next_provider = providers[index + 1]
             logger.warning(
                 "%s is unavailable after retries; switching this generation to %s model=%s.",
@@ -1009,6 +1031,74 @@ def _call_with_provider_fallback(
                 next_provider.model,
             )
     raise RuntimeError(f"All configured LLM providers failed: {last_error}") from last_error
+
+
+def _reasoning_used_the_budget(response: Any) -> bool:
+    """True when hidden reasoning tokens cut the visible answer short.
+
+    Some upstream models reason before answering even when asked not to. The
+    reasoning counts against ``max_tokens``, so the visible answer can come
+    back truncated or empty with a finish reason of "length".
+    """
+    choices = response.get("choices") if isinstance(response, dict) else getattr(response, "choices", None)
+    if not choices:
+        return False
+    choice = choices[0]
+    get = choice.get if isinstance(choice, dict) else lambda key, default=None: getattr(choice, key, default)
+    message = get("message") or {}
+    reasoning = (
+        message.get("reasoning_content") if isinstance(message, dict)
+        else getattr(message, "reasoning_content", None)
+    )
+    return str(get("finish_reason") or "") in {"length", "max_tokens"} and bool(reasoning)
+
+
+def _call_until_answered(
+    providers: list[_LLMProvider],
+    messages: list[dict[str, Any]],
+    *,
+    active_index: int = 0,
+    tools: list[dict[str, Any]] | None = None,
+    **kwargs: Any,
+) -> tuple[Any, int, "NormalizedLLMResponse"]:
+    """Call the provider chain, treating an unusable reply as a provider failure.
+
+    A hosted model occasionally returns a successful response with no text, or
+    one cut short because hidden reasoning used the output budget. That is
+    retried once on the same provider with a larger budget, and an empty reply
+    is then passed to the next provider instead of being shown to the user.
+    """
+    index = active_index
+    retries = 0
+    while True:
+        response, index = _call_with_provider_fallback(
+            providers, messages, active_index=index, tools=tools, **kwargs,
+        )
+        normalized = _normalize_llm_response(response)
+        answered = bool(normalized.content.strip() or normalized.tool_calls)
+        cut_short = _reasoning_used_the_budget(response)
+        if answered and not cut_short:
+            return response, index, normalized
+        if retries < EMPTY_REPLY_RETRIES:
+            retries += 1
+            logger.warning(
+                "%s returned %s reply; retrying once%s.",
+                providers[index].name,
+                "a truncated" if answered else "an empty",
+                " with a larger output budget" if cut_short else "",
+            )
+            if cut_short and kwargs.get("max_tokens"):
+                kwargs["max_tokens"] = min(
+                    MAX_RETRY_OUTPUT_TOKENS,
+                    max(MIN_RETRY_OUTPUT_TOKENS, int(kwargs["max_tokens"]) * RETRY_OUTPUT_BUDGET_FACTOR),
+                )
+            continue
+        if answered or index + 1 >= len(providers):
+            # A truncated answer is still better than none.
+            return response, index, normalized
+        logger.warning("%s gave no usable reply; trying the next provider.", providers[index].name)
+        index += 1
+        retries = 0
 
 
 # ============================================================================
@@ -1450,7 +1540,8 @@ def _split_temporal_prompt_context(
         model = result.get("model") or {}
         future["nodes"][node_id] = {
             "forecast_status": result.get("forecast_status"),
-            "forecast": result.get("forecast"),
+            # low/high bound a 90% interval from held-out validation errors.
+            "forecast": _compact_forecast(result.get("forecast")),
             "forecast_trends": result.get("forecast_trends"),
             "forecast_outlook": result.get("forecast_outlook"),
             "uncertainty_note": result.get("uncertainty_note"),
@@ -2159,7 +2250,7 @@ def generate_rag_response(
     # ------------------------------------------------------------------
 
     try:
-        response, active_provider_index = _call_with_provider_fallback(
+        response, active_provider_index, normalized = _call_until_answered(
             providers,
             messages,
             active_index=active_provider_index,
@@ -2179,12 +2270,6 @@ def generate_rag_response(
         raise RuntimeError(
             f"LLM generation failed: {exc}"
         ) from exc
-
-    # ------------------------------------------------------------------
-    # 6. Normalize the response
-    # ------------------------------------------------------------------
-
-    normalized = _normalize_llm_response(response)
 
     logger.info(
         "%s response normalized | "
@@ -2298,7 +2383,7 @@ def generate_rag_response(
 
         if tool_results_added:
             try:
-                response2, active_provider_index = _call_with_provider_fallback(
+                _response2, active_provider_index, normalized2 = _call_until_answered(
                     providers,
                     messages,
                     active_index=active_provider_index,
@@ -2307,10 +2392,6 @@ def generate_rag_response(
                     temperature=temperature,
                     max_tokens=max_output_tokens,
                     top_p=DEFAULT_TOP_P,
-                )
-
-                normalized2 = _normalize_llm_response(
-                    response2
                 )
 
                 answer_text = normalized2.content.strip()
@@ -2349,7 +2430,10 @@ def generate_rag_response(
     if response_mode == "field_summary":
         summary = normalize_field_summary(answer_text.removesuffix(EVIDENCE_REPORT_NOTE).strip())
         unreliable = (report_evidence["current_measurements"].get("status") == "unavailable"
-                      or report_evidence["data_quality"].get("stale"))
+                      or report_evidence["data_quality"].get("stale")
+                      # A well-formed sentence from the small offline model can still be
+                      # meaningless; the evidence-based sentence is always supported.
+                      or active_provider.name == "LocalLLM")
         if not summary or unreliable:
             summary = render_field_summary(report_evidence)
             evidence_fallback = True

@@ -133,7 +133,11 @@ LOCAL_LLM_DEVICE=cpu
 LOCAL_LLM_LOCAL_FILES_ONLY=true
 ```
 
-Authentication and invalid-request errors do not trigger fallback. The chat
+A reply that comes back empty, or cut short because the model spent its output
+budget on hidden reasoning, is retried once with a larger budget and then passed
+to the next provider. A provider that exhausts its retries is skipped for
+`LLM_PROVIDER_COOLDOWN_SECONDS` (default 120) so an outage slows one request,
+not every request. Authentication and invalid-request errors do not trigger fallback. The chat
 response's `model` field names the model that produced the final answer.
 Download `LOCAL_LLM_MODEL` once (set `LOCAL_LLM_LOCAL_FILES_ONLY=false` for that
 first run) before relying on the offline fallback.

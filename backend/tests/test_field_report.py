@@ -57,6 +57,18 @@ class FieldReportTests(unittest.TestCase):
         self.assertIn("out of date", response.answer)
         self.assertIsNotNone(normalize_field_summary(response.answer))
 
+    def test_offline_model_sentence_is_replaced_by_the_evidence_summary(self):
+        nonsense = "If the crop is planted in a field, it will be planted in a field with rich soil."
+        with (
+            patch.object(chat_llm, "_get_farm_snapshot", return_value=snapshot()),
+            patch.object(chat_llm, "_get_automatic_temporal_context", return_value={}),
+            patch.object(chat_llm, "_build_llm_providers", return_value=[chat_llm._LLMProvider("LocalLLM", object(), "flan-t5-small")]),
+            patch.object(chat_llm, "_call_with_provider_fallback", return_value=(nonsense, 0)),
+        ):
+            response = chat_llm.generate_rag_response("Summarise recent conditions", [], node_id="NODE_06", response_mode="field_summary")
+        self.assertIn("too wet", response.answer)
+        self.assertEqual(response.model_name, "sensor-screening-report")
+
     def test_summary_keeps_decimal_readings_but_rejects_paragraphs_and_fragments(self):
         self.assertIsNotNone(normalize_field_summary("Soil moisture is 32.5%, so check the root zone before adjusting irrigation."))
         for answer in ("### Assessment\nThe soil is wet.", "soil moisture", "The soil is wet. Clear drainage.", "word " * 46 + "."):

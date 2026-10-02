@@ -213,6 +213,95 @@ class ProviderFallbackTests(unittest.TestCase):
         self.assertEqual(response.model_name, "claude-opus-4.8")
         self.assertEqual(primary_calls, 2)
 
+    def test_empty_reply_is_retried_then_passed_to_the_next_provider(self) -> None:
+        primary, fallback = object(), object()
+        providers = [
+            chat_llm._LLMProvider("AgentRouter", primary, "primary-model"),
+            chat_llm._LLMProvider("Conduit", fallback, "fallback-model"),
+        ]
+        calls: list[object] = []
+
+        def fake_call(client, *_args, **_kwargs):
+            calls.append(client)
+            return "" if client is primary else "Fallback answer"
+
+        with patch.object(chat_llm, "_call_llm_with_retry", side_effect=fake_call):
+            _response, index, normalized = chat_llm._call_until_answered(
+                providers, [{"role": "user", "content": "hello"}],
+            )
+        self.assertEqual(calls, [primary, primary, fallback])
+        self.assertEqual(index, 1)
+        self.assertEqual(normalized.content, "Fallback answer")
+
+    def test_empty_reply_recovers_on_the_same_provider(self) -> None:
+        providers = [chat_llm._LLMProvider("AgentRouter", object(), "primary-model")]
+        with patch.object(chat_llm, "_call_llm_with_retry", side_effect=["", "Second try answer"]) as call:
+            _response, index, normalized = chat_llm._call_until_answered(
+                providers, [{"role": "user", "content": "hello"}],
+            )
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual((index, normalized.content), (0, "Second try answer"))
+
+    def test_reply_cut_short_by_hidden_reasoning_is_retried_with_more_budget(self) -> None:
+        def reply(content, finish_reason, reasoning):
+            return {"choices": [{"finish_reason": finish_reason, "message": {"content": content, "reasoning_content": reasoning}}]}
+
+        providers = [chat_llm._LLMProvider("AgentRouter", object(), "primary-model")]
+        replies = [reply("", "length", "long hidden reasoning"), reply("Full answer.", "stop", "")]
+        with patch.object(chat_llm, "_call_llm_with_retry", side_effect=replies) as call:
+            _response, _index, normalized = chat_llm._call_until_answered(
+                providers, [{"role": "user", "content": "hello"}], max_tokens=1024,
+            )
+        self.assertEqual(normalized.content, "Full answer.")
+        self.assertEqual(call.call_args_list[0].kwargs["max_tokens"], 1024)
+        self.assertEqual(call.call_args_list[1].kwargs["max_tokens"], 3072)
+
+    def test_short_summary_budget_is_raised_enough_for_a_reasoning_pass(self) -> None:
+        cut = {"choices": [{"finish_reason": "length", "message": {"content": "", "reasoning_content": "thinking"}}]}
+        providers = [chat_llm._LLMProvider("AgentRouter", object(), "primary-model")]
+        with patch.object(chat_llm, "_call_llm_with_retry", side_effect=[cut, "One sentence."]) as call:
+            chat_llm._call_until_answered(providers, [{"role": "user", "content": "hello"}], max_tokens=192)
+        self.assertEqual(call.call_args_list[1].kwargs["max_tokens"], 2048)
+
+    def test_failed_provider_is_skipped_until_its_cooldown_ends(self) -> None:
+        primary, fallback = object(), object()
+        providers = [
+            chat_llm._LLMProvider("AgentRouter", primary, "primary-model"),
+            chat_llm._LLMProvider("Conduit", fallback, "fallback-model"),
+        ]
+        calls: list[object] = []
+
+        def fake_call(client, *_args, **_kwargs):
+            calls.append(client)
+            if client is primary:
+                raise RuntimeError("AgentRouter API call failed: 503 service unavailable")
+            return "Fallback answer"
+
+        with patch.object(chat_llm, "_call_llm_with_retry", side_effect=fake_call):
+            chat_llm._call_with_provider_fallback(providers, [{"role": "user", "content": "one"}])
+            chat_llm._call_with_provider_fallback(providers, [{"role": "user", "content": "two"}])
+            chat_llm.reset_provider_cooldowns()
+            chat_llm._call_with_provider_fallback(providers, [{"role": "user", "content": "three"}])
+        self.assertEqual(calls, [primary, fallback, fallback, primary, fallback])
+
+    def test_ordinary_long_answer_is_not_retried(self) -> None:
+        providers = [chat_llm._LLMProvider("AgentRouter", object(), "primary-model")]
+        long_reply = {"choices": [{"finish_reason": "length", "message": {"content": "A long answer", "reasoning_content": None}}]}
+        with patch.object(chat_llm, "_call_llm_with_retry", return_value=long_reply) as call:
+            chat_llm._call_until_answered(providers, [{"role": "user", "content": "hello"}], max_tokens=1024)
+        self.assertEqual(call.call_count, 1)
+
+    def test_forecast_is_compacted_for_the_prompt(self) -> None:
+        compact = chat_llm._compact_forecast({"49m": {
+            "horizon_steps": 48, "horizon_minutes": 48.8,
+            "moisture_pct": {"predicted": 59.8123, "prediction_interval": {"lower": 50.337, "upper": 69.2876, "coverage": 0.9, "method": "x"}},
+            "humidity_pct": {"predicted": 61.0, "prediction_interval": None},
+        }})
+        self.assertEqual(compact, {"49m": {
+            "moisture_pct": {"predicted": 59.8, "low": 50.3, "high": 69.3},
+            "humidity_pct": {"predicted": 61.0},
+        }})
+
     def test_conduit_can_run_when_agentrouter_key_is_absent(self) -> None:
         fallback_client = object()
         local_client = object()
